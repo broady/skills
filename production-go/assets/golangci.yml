@@ -1,0 +1,172 @@
+# golangci-lint configuration — production-go skill
+# Copy to project root as .golangci.yml
+#
+# Targets Go 1.26+, golangci-lint v2.
+# See references/linting.md for the rationale behind every choice.
+
+version: "2"
+
+run:
+  # Large module graphs + staticcheck can be slow on cold caches.
+  timeout: 5m
+
+linters:
+  # Disable everything by default, then enable exactly what we want.
+  # This prevents new linters from silently appearing on upgrade.
+  default: none
+  enable:
+    # --- Correctness ---
+    - govet           # printf mismatches, struct tags, unreachable code
+    - staticcheck     # the most comprehensive Go analyzer
+    - errcheck        # every error must be checked
+    - bodyclose       # unclosed http.Response.Body leaks connections
+    - noctx           # HTTP requests without context
+    - sqlclosecheck   # unclosed sql.Rows / sql.Stmt
+    - rowserrcheck    # unchecked sql.Rows.Err()
+    - nilerr          # returning nil inside if err != nil
+    - exhaustive      # exhaustive switch on enum types
+    - forcetypeassert # single-value type assertions can panic
+
+    # --- Style ---
+    - gofumpt         # stricter gofmt
+    - revive          # configurable linter (replaces golint)
+    - errname         # ErrFoo / FooError naming
+    - gci             # import ordering
+    - misspell        # typos in comments and strings
+    - predeclared     # avoid shadowing built-in names like error/string/len
+
+    # --- Performance ---
+    - prealloc        # slice preallocation when bound is known
+    - goconst         # repeated string literals -> constants
+
+    # --- Security ---
+    - gosec           # common security issues
+
+    # --- Banned patterns ---
+    - forbidigo       # ban fmt.Print*, log.Print*, etc.
+
+  settings:
+    govet:
+      # Enable all analyzers including those not on by default.
+      enable-all: true
+
+    revive:
+      rules:
+        # No dot imports — they pollute the namespace and make code
+        # harder to read because you can't tell where names come from.
+        - name: dot-imports
+
+        # No empty blocks — usually a sign of unfinished code or a
+        # swallowed error. If intentional, add a comment explaining why.
+        - name: empty-block
+
+        # Bare returns are confusing in functions with named return values.
+        - name: bare-return
+
+        # Enforce consistent error return placement (last return value).
+        - name: error-return
+
+        # Unreachable code after return/panic/os.Exit.
+        - name: unreachable-code
+
+    forbidigo:
+      forbid:
+        # Ban unstructured printing — use slog instead.
+        - pattern: '^fmt\.Print.*$'
+          msg: "use slog instead of fmt.Print* for output"
+        - pattern: '^fmt\.Fprint.*$'
+          msg: "use slog instead of fmt.Fprint* for output"
+
+        # Ban unstructured logging. log.Fatal* is allowed only in main(), so
+        # either exclude cmd/*/main.go below or keep main() on slog + os.Exit.
+        - pattern: '^log\.Print.*$'
+          msg: "use slog instead of log.Print*"
+        - pattern: '^log\.Fatal.*$'
+          msg: "log.Fatal* is allowed only in main(); return an error elsewhere"
+        - pattern: '^log\.Panic.*$'
+          msg: "use slog and return an error instead of log.Panic*"
+        - pattern: '^os\.Exit$'
+          msg: "os.Exit is allowed only in main(); return an error elsewhere"
+
+        # Ban slog's hidden global logger. Constructors take *slog.Logger.
+        - pattern: '^slog\.Default$'
+          msg: "slog.Default() is allowed only in main() or test bootstrap; pass *slog.Logger through constructors"
+        - pattern: '^slog\.(Debug|Info|Warn|Error|Log|LogAttrs)$'
+          msg: "do not use slog's package-level logger; use an injected *slog.Logger and Context methods in request code"
+
+        # Ban context-as-service-locator helpers. Extend this list with local
+        # helper package names used by the project.
+        - pattern: '^ctxutil\.(DB|Tx|Store|Repository|Client|Service|Logger|Config|Clock|IDGenerator)$'
+          msg: "dependencies come from constructors, not context.Context"
+
+      # Only enforce in non-test files. Tests may use fmt.Print for debugging.
+      exclude-godoc-examples: true
+      analyze-types: true
+
+    gci:
+      sections:
+        # 1. Standard library
+        - standard
+        # 2. Everything else (Uber style: goimports-compatible two groups)
+        - default
+
+    exhaustive:
+      # Only enforce on type switches and enum switches that are clearly
+      # intended to be exhaustive (have no default case).
+      default-signifies-exhaustive: true
+
+    errcheck:
+      # Do not exclude any functions. Every error matters.
+      # If you intentionally discard one, use:
+      #   _ = conn.Close() //nolint:errcheck // best-effort cleanup
+      exclude-functions: []
+
+    goconst:
+      # Flag strings repeated 3 or more times.
+      min-occurrences: 3
+
+    gosec:
+      excludes:
+        # G104 is redundant with errcheck.
+        - G104
+
+    gofumpt:
+      extra-rules: true
+
+  exclusions:
+    # Allow fmt.Print*, log.*, and os.Exit in test files.
+    rules:
+      - linters:
+          - forbidigo
+        path: _test\.go
+
+      # Allow log.Fatal* in main packages. Non-main code returns errors.
+      - linters:
+          - forbidigo
+        path: cmd/.*/main\.go
+        text: "log.Fatal"
+
+      # Allow os.Exit in main packages. Non-main code returns errors.
+      - linters:
+          - forbidigo
+        path: cmd/.*/main\.go
+        text: "os.Exit"
+
+      # Allow slog.Default in main packages for process bootstrap.
+      - linters:
+          - forbidigo
+        path: cmd/.*/main\.go
+        text: "slog.Default"
+
+      # Allow unused parameters in test helpers and interface implementations.
+      - linters:
+          - revive
+        text: "unused-parameter"
+
+    # Do not skip any directories — lint everything.
+    paths: []
+
+issues:
+  # Show all issues, do not cap per-linter.
+  max-issues-per-linter: 0
+  max-same-issues: 0

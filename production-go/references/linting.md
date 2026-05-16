@@ -1,0 +1,142 @@
+# Linting
+
+## The Single Tool: golangci-lint
+
+Use `golangci-lint` as the only linting tool. No standalone `go vet` invocations,
+no separate `staticcheck` binary, no ad-hoc shell scripts. One tool, one config,
+one CI step.
+
+```sh
+golangci-lint run ./...
+```
+
+Configure via `.golangci.yml` at the project root. Pin the version in CI and in
+pre-commit hooks so all developers and agents produce identical results.
+
+A ready-to-use config is at [../assets/golangci.yml](../assets/golangci.yml).
+
+## Recommended Linters
+
+### Correctness
+
+These catch real bugs. All are non-negotiable.
+
+| Linter | Why |
+|---|---|
+| `govet` | Catches printf format mismatches, struct tag errors, unreachable code, and more. The standard set of Go analyzers. |
+| `staticcheck` | The most comprehensive single Go analyzer. Finds unused code, deprecated API usage, incorrect sync usage, impossible conditions. |
+| `errcheck` | Ensures every returned error is checked. Unhandled errors are the #1 source of silent data loss. |
+| `bodyclose` | Detects unclosed `http.Response.Body`. An unclosed body leaks a TCP connection and eventually exhausts the connection pool. |
+| `noctx` | Flags HTTP requests made without a `context.Context`. Without context, you lose cancellation, timeouts, and tracing propagation. |
+| `sqlclosecheck` | Catches unclosed `sql.Rows` and `sql.Stmt`. Leaked rows hold a database connection hostage. |
+| `rowserrcheck` | Ensures `sql.Rows.Err()` is checked after iteration. Without this, partial result sets go undetected. |
+| `nilerr` | Detects `return nil` inside an `if err != nil` block. Almost always a copy-paste bug. |
+| `exhaustive` | Requires switch statements on enum-like types to cover every case. Prevents silent logic gaps when new values are added. |
+| `forcetypeassert` | Flags single-value type assertions that can panic. Use comma-ok assertions. |
+
+### Style
+
+These enforce the house rules so code reviews can focus on logic, not formatting.
+
+| Linter | Why |
+|---|---|
+| `gofumpt` | Stricter superset of `gofmt`. Enforces consistent grouping of declarations, removes unnecessary blank lines, and simplifies composite literals. |
+| `revive` | Configurable replacement for the deprecated `golint`. Use it to enforce specific rules: no dot imports, no empty blocks, no bare returns in non-trivial functions. |
+| `errname` | Enforces `ErrFoo` for sentinel errors and `FooError` for error types. Consistent naming makes errors greppable. |
+| `gci` | Enforces Uber-style import ordering: standard library, then everything else. Deterministic imports eliminate diff noise. |
+| `misspell` | Catches typos in comments and string literals. Typos in log messages and error strings make grep-based debugging harder. |
+| `predeclared` | Flags names that shadow built-ins such as `error`, `string`, `len`, and `cap`. |
+
+### Performance
+
+These surface easy wins that agents often miss.
+
+| Linter | Why |
+|---|---|
+| `prealloc` | Suggests `make([]T, 0, n)` when the loop bound is known. Avoids repeated slice growth allocations. |
+| `goconst` | Flags string literals repeated 3+ times. Repeated strings waste memory and invite typos. Extract to a constant. |
+
+### Security
+
+| Linter | Why |
+|---|---|
+| `gosec` | Detects hardcoded credentials, weak crypto, SQL injection via string concatenation, unsafe use of `unsafe`, uncontrolled file paths, and other common vulnerabilities. |
+
+### Banned Patterns
+
+Use `forbidigo` or `revive` rules to enforce these bans in non-test code:
+
+| Banned | Replacement | Why |
+|---|---|---|
+| `fmt.Print*`, `fmt.Fprint*` | `slog.Info`, `slog.Error` | Unstructured output. Impossible to filter, route, or query in production. |
+| `log.Print*` | `slog.Info`, `slog.Error` | The `log` package has no structured fields and no levels. Use `slog` for production logging. |
+| `log.Fatal*` outside `main` | Return an error | `log.Fatal` calls `os.Exit`. Only the entrypoint decides to terminate the process. |
+| `os.Exit` outside `main` | Return an error | `os.Exit` bypasses `defer`, skips graceful shutdown, and makes non-entrypoint code untestable. Use the `run() error` pattern. |
+| Dependencies from `context.Context` | Constructor injection | Context carries cancellation, deadlines, and request-scoped metadata. It is not a service locator. Ban project helpers such as `ctxutil.DB(ctx)`, `ctxutil.Store(ctx)`, and `ctxutil.Client(ctx)`. |
+| `slog.Default()` outside `main` or test bootstrap | Constructor-injected `*slog.Logger` | The default logger is global state. Components receive loggers explicitly. |
+| Package-level `slog.Info`, `slog.Error`, etc. | Injected `*slog.Logger` | Package-level slog calls use the global default logger and lose component/request policy. |
+
+No general-purpose linter can reliably know whether a `ctx.Value` result is a
+dependency or request metadata. Add `forbidigo` patterns for project-specific
+context helper packages and review direct `ctx.Value` usage carefully.
+
+Likewise, no stock linter can perfectly identify "inside a request" for logging.
+Ban package-level slog calls with `forbidigo`; review service/handler code for
+`InfoContext`, `ErrorContext`, and `logger.LogAttrs(ctx, ...)` rather than
+context-free `Info`, `Error`, or per-call `logger.With(...)`.
+
+### sloglint
+
+Enforces type-safe, context-aware, structured logging with `slog`. Complements
+`forbidigo` — `forbidigo` bans the wrong functions, `sloglint` enforces the
+right calling convention on the functions you keep.
+
+```yaml
+linters-settings:
+  sloglint:
+    attr-only: true          # reject kv pairs; require typed slog.Attr
+    no-global: "all"         # block slog.Info, slog.Default(), etc.
+    context: "all"           # require a context on every log call
+    static-msg: true         # message must be a string literal
+    key-naming-case: snake   # enforce snake_case keys
+```
+
+See [observability.md](observability.md#prefer-logattrs-everywhere) for the
+rationale behind `attr-only` and the typed attr constructor pattern.
+
+## Linters to Disable
+
+These are explicitly disabled because they create noise without catching real
+issues:
+
+| Linter | Why disabled |
+|---|---|
+| `wsl` | Nitpicks whitespace placement. Constant false positives on idiomatic Go. |
+| `funlen` | Arbitrary function length limits. A 60-line table-driven test is perfectly readable. |
+| `gocognit`, `cyclop` | Cognitive/cyclomatic complexity thresholds trigger on straightforward switch statements and table-driven tests. |
+| `lll` | Line length limits conflict with Go's preference for descriptive names, struct tags, and long function signatures. |
+| `godox` | Banning `TODO`/`FIXME` comments hides technical debt rather than surfacing it. |
+
+## golangci-lint in CI
+
+Run as a dedicated CI step with a pinned version:
+
+```yaml
+# GitHub Actions example
+- uses: golangci/golangci-lint-action@v7
+  with:
+    version: v2.1.6
+```
+
+For incremental linting on pull requests, use `--new-from-rev` to lint only
+changed code against the merge base:
+
+```sh
+golangci-lint run --new-from-rev=origin/main ./...
+```
+
+This keeps existing code from blocking PRs while ensuring all new code meets
+the standard. Remove `--new-from-rev` once the full codebase is clean.
+
+Set `--timeout 5m` in CI. Large module graphs and `staticcheck` can exceed the
+default timeout on cold caches.

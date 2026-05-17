@@ -33,7 +33,7 @@ func Collect[T, R any](ctx context.Context, limit int, items []T, fn func(contex
 		return nil
 	}
 	if limit <= 0 {
-		limit = len(items)
+		panic("safe.Collect: limit must be > 0")
 	}
 
 	results := make([]Result[R], len(items))

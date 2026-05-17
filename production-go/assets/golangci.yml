@@ -38,6 +38,7 @@ linters:
     - gci             # import ordering
     - misspell        # typos in comments and strings
     - predeclared     # avoid shadowing built-in names like error/string/len
+    - sloglint        # type-safe, context-aware slog calls
 
     # --- Performance ---
     - prealloc        # slice preallocation when bound is known
@@ -78,11 +79,10 @@ linters:
 
     forbidigo:
       forbid:
-        # Ban unstructured printing — use slog instead.
+        # Ban unstructured process output. Operational logs use slog; CLI
+        # user-facing output goes through an injected io.Writer.
         - pattern: '^fmt\.Print.*$'
-          msg: "use slog instead of fmt.Print* for output"
-        - pattern: '^fmt\.Fprint.*$'
-          msg: "use slog instead of fmt.Fprint* for output"
+          msg: "use logger.LogAttrs for operational logs or an injected io.Writer for CLI output"
 
         # Ban unstructured logging. log.Fatal* is allowed only in main(), so
         # either exclude cmd/*/main.go below or keep main() on slog + os.Exit.
@@ -99,7 +99,7 @@ linters:
         - pattern: '^slog\.Default$'
           msg: "slog.Default() is allowed only in main() or test bootstrap; pass *slog.Logger through constructors"
         - pattern: '^slog\.(Debug|Info|Warn|Error|Log|LogAttrs)$'
-          msg: "do not use slog's package-level logger; use an injected *slog.Logger and Context methods in request code"
+          msg: "do not use slog's package-level logger; use an injected *slog.Logger and LogAttrs"
 
         # Ban context-as-service-locator helpers. Extend this list with local
         # helper package names used by the project.
@@ -152,6 +152,13 @@ linters:
 
     gofumpt:
       extra-rules: true
+
+    sloglint:
+      attr-only: true
+      no-global: "all"
+      context: "all"
+      static-msg: true
+      key-naming-case: snake
 
   exclusions:
     # Allow fmt.Print*, log.*, and os.Exit in test files.

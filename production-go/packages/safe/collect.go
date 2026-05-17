@@ -16,7 +16,7 @@ type Result[R any] struct {
 // Results are returned in input order. Panics in fn are recovered and
 // reported as *PanicError in the corresponding Result.Err.
 //
-// If limit <= 0, concurrency is bounded to len(items).
+// If limit <= 0, Collect panics. Callers must provide an explicit bound.
 // When ctx is cancelled, in-flight goroutines run to completion but new items
 // are not started; their Result.Err is set to ctx.Err().
 //

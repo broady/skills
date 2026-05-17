@@ -60,37 +60,43 @@ production incidents:
 
 ## Decision Table
 
-| I need to... | Do this |
-|---|---|
-| Run N things concurrently (all-or-nothing) | `errgroup.WithContext` + `SetLimit` |
-| Run N things concurrently (best-effort collect) | `safe.Collect` — bounded, panic-safe, per-item errors |
-| Run multiple subsystems in one process | `errgroup` if they share a cancel signal; `oklog/run.Group` if they need independent interrupt/cleanup |
-| Run a background worker | errgroup goroutine with `select` on `ctx.Done()` |
-| Signal completion | `context.CancelFunc` or `chan struct{}` |
-| Get one async result | `chan T` (size 1) |
-| Protect shared state | non-pointer `sync.Mutex` field (read-heavy: `sync.RWMutex`); for values needing atomic read-modify-write: `safe.Locked[T]` |
-| Lazy-initialize | `sync.OnceValue`; `sync.Once` for side-effect-only init |
-| Store a counter/flag | `go.uber.org/atomic` |
-| Pass request metadata | `context.WithValue` |
-| Pass a dependency | Constructor parameter |
-| Define a dependency boundary | Interface at the consumer site |
-| Configure optional settings | Config struct with zero-value defaults |
-| Configure loaded/validated settings | Config struct + `Validate() error` |
-| Choose exactly one of N | Interface field on config struct |
-| Enforce construction order | Builder with type-state |
-| Handle an error | `fmt.Errorf("op: %w", err)` and return |
-| Report errors to callers | Map domain errors → HTTP/gRPC status at boundary via error map |
-| Process async work durably | External broker (SQS, Pub/Sub, NATS) with ack/nack; in-process queue only for single-binary deploys |
-| Run DB operations atomically | `WithTx(ctx, db, fn)` — fn receives `*sql.Tx`, pass it explicitly to store methods via `Querier` interface |
-| Serve HTTP | `http.Server{}` with explicit `ReadHeaderTimeout`, `ReadTimeout`, `WriteTimeout`, `IdleTimeout` |
-| Make outgoing HTTP requests | Custom `http.Client{}` with `Timeout` set. Never `http.DefaultClient` or `http.Get()` in production |
-| Connect to a database | Explicit pool config: `MaxConns`, `MaxConnLifetime`, `MaxConnIdleTime` |
-| Represent a domain identifier | `type FooID string` / `type FooID int64` — strong type, not raw primitive |
-| Log | `*slog.Logger` via constructor |
-| Instrument | OpenTelemetry SDK |
-| Build a CLI | `github.com/alecthomas/kong` for flags; config package for env/files/secrets |
-| Discover all service config | Single config struct or `loadConfig()` — a reviewer answers "what does this connect to?" from one location |
-| Ban dangerous imports | `depguard` in golangci-lint — deny `encoding/json` (use wrapper), `io/ioutil`, etc. |
+Labels:
+- **Safety invariant** — violating this can cause incidents.
+- **Project default** — use this for new code unless there is a concrete reason not to.
+- **Style preference** — consistency matters more than the specific choice.
+
+| I need to... | Do this | Label |
+|---|---|---|
+| Run N things concurrently (all-or-nothing) | `errgroup.WithContext` + `SetLimit` | Safety invariant |
+| Run N things concurrently (best-effort collect) | `safe.Collect` — bounded, panic-safe, per-item errors | Project default |
+| Run multiple subsystems in one process | `errgroup` if they share a cancel signal; `oklog/run.Group` if they need independent interrupt/cleanup | Project default |
+| Run a background worker | errgroup goroutine with `select` on `ctx.Done()` | Safety invariant |
+| Signal completion | `context.CancelFunc` or `chan struct{}` | Project default |
+| Get one async result | `chan T` (size 1) | Project default |
+| Protect shared state | non-pointer `sync.Mutex` field (read-heavy: `sync.RWMutex`); for values needing atomic read-modify-write: `safe.Locked[T]` | Safety invariant |
+| Lazy-initialize | `sync.OnceValue`; `sync.Once` for side-effect-only init | Project default |
+| Store a counter/flag | `go.uber.org/atomic` | Style preference |
+| Pass request metadata | `context.WithValue` | Project default |
+| Pass a dependency | Constructor parameter | Safety invariant |
+| Define a dependency boundary | Interface at the consumer site | Project default |
+| Configure optional settings | Config struct with zero-value defaults | Project default |
+| Configure loaded/validated settings | Config struct + `Validate() error` | Safety invariant |
+| Choose at most one of N; require one | Interface field on config struct for "at most one"; `Validate()` enforces that one is required | Project default |
+| Enforce construction order | Builder with type-state | Project default |
+| Handle an error | Add operation context and return. Use `%w` only when exposing the cause is part of the stable error contract; otherwise convert to a domain error or use `%v` at public boundaries | Safety invariant |
+| Report errors to callers | Map domain errors → HTTP/gRPC status at boundary via error map | Safety invariant |
+| Process async work durably | External broker (SQS, Pub/Sub, NATS) with ack/nack; in-process queue only for single-binary deploys | Safety invariant |
+| Run DB operations atomically | `WithTx(ctx, db, fn)` — fn receives `*sql.Tx`, pass it explicitly to store methods via `Querier` interface | Safety invariant |
+| Serve HTTP | `http.Server{}` with explicit `ReadHeaderTimeout`, `ReadTimeout`, `WriteTimeout`, `IdleTimeout` | Safety invariant |
+| Decode/encode JSON | Use stdlib `encoding/json` with explicit size limits and error handling; optionally ban direct `encoding/json` when the project has a serialization wrapper | Safety invariant |
+| Make outgoing HTTP requests | Custom `http.Client{}` with `Timeout` set. Never `http.DefaultClient` or `http.Get()` in production | Safety invariant |
+| Connect to a database | Explicit pool config: `MaxConns`, `MaxConnLifetime`, `MaxConnIdleTime` | Safety invariant |
+| Represent a domain identifier | `type FooID string` / `type FooID int64` — strong type, not raw primitive | Safety invariant |
+| Log | `*slog.Logger` via constructor | Project default |
+| Instrument | Endpoint metrics by default; OpenTelemetry when multi-backend export, cross-service tracing, or org policy justifies it | Project default |
+| Build a CLI | `github.com/alecthomas/kong` for flags; config package for env/files/secrets | Project default |
+| Discover all service config | Single config struct or `loadConfig()` — a reviewer answers "what does this connect to?" from one location | Safety invariant |
+| Ban dangerous imports | `depguard` in golangci-lint for project-specific dependency boundaries; optionally ban direct `encoding/json` when the project has a serialization wrapper | Project default |
 
 ## Strict Review Checklist
 
@@ -111,7 +117,7 @@ Before finalizing Go code, verify:
 - Cross-system data validated at boundaries: correct ID types, populated fields, documented invariants.
 - Server shutdown drains every listener, worker, telemetry provider, and dependency.
 - Tests cover changed behavior; if the change touches error handling, cancellation, concurrency, or ownership, tests exercise those paths.
-- Generated code (protobuf, OpenAPI, sqlc, etc.) is exempt from style rules; do not modify generated files.
+- Generated files are exempt; do not modify them. Hand-written adapters and wrappers around generated code must follow Tier 1 safety rules.
 
 ## Existing Codebases
 
@@ -128,22 +134,26 @@ migrate to slog if the existing logger is consistent and adequate. The cost of
 churn for pure-style compliance in stable code exceeds the benefit. Fix safety
 issues; leave aesthetic preferences for new code or planned rewrites.
 
-## New Code Defaults
+## Project Defaults For New Code
 
 For new production services, use generated or contract-first HTTP APIs when an
 OpenAPI spec exists or is expected. Keep transport handlers thin: decode,
 validate, call one application service method, map domain errors, encode. Use
-Connect for RPC when possible, Kong for CLIs, `slog` for logging, OpenTelemetry
-for metrics and tracing, `golangci-lint` for static checks, `errgroup` for
-bounded all-or-nothing task groups, `safe.Collect` for bounded best-effort
-fan-out/collect, `oklog/run.Group` for multi-subsystem lifecycle management,
-and `goleak` for packages that start goroutines. Deviations require a concrete
-operational reason.
+Connect for RPC when possible, Kong for CLIs, and `slog` for logging. Instrument
+endpoints with metrics by default. Use OpenTelemetry when multi-backend export,
+cross-service tracing, or org policy justifies it; prefer metrics-only until
+tracing has a concrete operational need. Use `golangci-lint` for static checks,
+`errgroup` for bounded all-or-nothing task groups, `safe.Collect` for bounded
+best-effort fan-out/collect, `oklog/run.Group` for multi-subsystem lifecycle
+management, and `goleak` for packages that start goroutines. These are project
+defaults, not universal Go law. Preserve existing equivalent choices unless a
+migration has a concrete operational reason.
 
-## Rules — Tier 1: Safety
+## Rules — Tier 1: Safety Invariants
 
-These prevent production incidents. Apply them unconditionally to all code —
-new, existing, generated wrappers, and reviews.
+These prevent production incidents. Apply them unconditionally to all
+hand-written code: new code, existing code, adapters and wrappers around
+generated code, and reviews. Generated files are exempt; do not modify them.
 
 1. **No mutable globals, avoid `init()`**. Package-level `var` only for sentinel errors, compile-time interface checks, and values that are immutable by construction (embed.FS, compiled regexps, `strings.NewReplacer(...)`, `cases.Fold()`, sync.Pool with deterministic New, `sync.OnceValue` lazy singletons). Package-level slices, maps, pointers, and structs with mutable fields are mutable even when treated as read-only; build them in constructors or return defensive copies. Avoid `init()`; if unavoidable, it must be deterministic, avoid I/O/env/global mutation/goroutines, and not depend on init ordering. Acceptable `init()` uses: registering a value into an in-process registry (codec registration, `database/sql` drivers via blank imports) — the registration itself must not perform I/O or start goroutines. Everything else flows through constructors. See [references/design.md](references/design.md).
 
@@ -175,35 +185,37 @@ new, existing, generated wrappers, and reviews.
 
 12. **Context is not a service locator.** `context.Context` is the first parameter and is never stored in a struct. Use it for cancellation, deadlines, and request-scoped values that genuinely flow with the request (trace ID, auth principal, request ID). Dependencies go through constructors, never through `ctx.Value` helpers like `ctxutil.DB(ctx)`.
 
-13. **No panic, no recover in application code.** Return errors. Library code may panic only for true invariant violations where continuing is unsafe. `recover` is allowed in exactly two places: goroutine supervisors (`safe.Go`, `safe.Collect`) and package-internal entry points (recursive parsers/walkers where panic is a structured longjmp that never escapes the package). In both cases, the panic is converted to a returned error — never swallowed. Do not add HTTP/gRPC panic recovery middleware. See [references/errors.md](references/errors.md).
+13. **No panic, no recover in application code.** Return errors. Library code may panic only for true invariant violations where continuing is unsafe. Dev/test-only invariant checks may panic if gated out of production and used to catch programmer misuse. Production runtime failures still return errors. `recover` is allowed in exactly two places: goroutine supervisors (`safe.Go`, `safe.Collect`) and package-internal entry points (recursive parsers/walkers where panic is a structured longjmp that never escapes the package). In both cases, the panic is converted to a returned error — never swallowed. Do not add HTTP/gRPC panic recovery middleware. See [references/errors.md](references/errors.md).
 
-## Rules — Tier 2: Quality
+## Rules — Tier 2: Project Defaults And Style Preferences
 
-These improve maintainability and readability. Apply to new code. In existing
-codebases, apply only when already modifying the relevant code or during planned
-rewrites. Do not churn stable code purely for style compliance.
+These improve maintainability and readability. Apply project defaults to new
+code unless there is a concrete reason not to. Style preferences should follow
+the local codebase. In existing codebases, apply these only when already
+modifying the relevant code or during planned rewrites. Do not churn stable code
+purely for style compliance.
 
-14. **Constructor injection.** The wiring in `main()` IS the dependency graph. Manual wiring scales: organize large graphs into small `newX(...)` helpers, not service locators or DI containers. Constructor injection is a means to testability; testability is a means to correctness. Prioritize the end (correctness, observable behavior) over the means (DI purity). See [references/design.md](references/design.md).
+14. **Project default — constructor injection.** The wiring in `main()` IS the dependency graph. Manual wiring scales: organize large graphs into small `newX(...)` helpers, not service locators or DI containers. Constructor injection is a means to testability; testability is a means to correctness. Prioritize the end (correctness, observable behavior) over the means (DI purity). This is intentionally stricter than many Go guides because hidden dependencies are especially costly in generated service code. See [references/design.md](references/design.md).
 
-15. **Interfaces at the consumer, not the producer.** 1-2 methods. Accept interfaces, return structs. No interface is better than a premature interface — don't define one until you need a test double or a second implementation. Concrete types are fine when you control both sides. `var _ I = (*T)(nil)` for compile-time checks. See [references/design.md](references/design.md).
+15. **Project default — interfaces at the consumer, not the producer.** 1-2 methods. Accept interfaces, return structs. No interface is better than a premature interface — don't define one until you need a test double or a second implementation. Concrete types are fine when you control both sides. `var _ I = (*T)(nil)` for compile-time checks. See [references/design.md](references/design.md).
 
-16. **Channels: size 0 or 1.** Unbuffered for sync, buffered-1 for futures. Fan-out/collect with buffer == producer count is self-documenting and needs no justifying comment. Other sizes require a justifying comment. Prefer `sync.Mutex` for shared state, `errgroup` for coordination. Channels are the exception, not the default.
+16. **Safety invariant — channels are size 0 or 1 by default.** Unbuffered for synchronous handoff; buffered-1 for one-shot futures. Any buffer greater than 1 requires a comment explaining the bound, why a channel is the right primitive, what prevents unbounded growth, and what happens if producers outpace consumers. `make(chan Result, len(items))` is allowed only for finite fan-in where `len(items)` is explicitly bounded, each producer sends at most once, and concurrency is limited separately. Prefer `errgroup.SetLimit`, `safe.Collect`, a preallocated result slice, or a mutex-protected collection for ordinary fan-out/fan-in.
 
-17. **slog only, no global logger in long-running services.** No `fmt.Println`, no `log.Printf`, no package-level `slog.Info/Error`. Constructors take `*slog.Logger` and bind component attributes once with `logger.With(...)`. Request code uses `InfoContext`, `ErrorContext`, or `logger.LogAttrs(ctx, ...)`. Exception: CLI tools and one-shot commands where injecting a logger through many layers is pure ceremony — `slog.Default()` is acceptable there. See [references/observability.md](references/observability.md).
+17. **Project default — slog only, no global logger in services.** No `fmt.Println`, no `log.Printf`, no package-level `slog.Info/Error`, and no `slog.Default()` outside `main()` or test bootstrap. Constructors take `*slog.Logger` and bind component attributes once with `logger.With(...)`. Request logs use `logger.LogAttrs(ctx, ...)` with typed `slog.Attr` values. Startup/shutdown logs use `logger.LogAttrs(context.Background(), ...)` when no request context exists. CLI tools write user-facing output to an injected `io.Writer`; use `slog.Default()` only in `main()` or test bootstrap. See [references/observability.md](references/observability.md).
 
-18. **Zero value must be useful.** Design structs so `var x T` works. `sync.OnceValue` for lazy-initialized package-level values; `sync.Once` for side-effect-only initialization. Defaults applied in constructors/methods, not required from callers.
+18. **Project default — zero value should be useful.** Design structs so `var x T` works. `sync.OnceValue` for lazy-initialized package-level values; `sync.Once` for side-effect-only initialization. Defaults applied in constructors/methods, not required from callers.
 
-19. **Generics for type safety, not cleverness.** Good: typed containers, `Set[T]`, `SyncMap[K,V]`, eliminating `any` casts. Bad: one concrete type, premature abstraction. Wait for 3+ implementations.
+19. **Style preference — generics for type safety, not cleverness.** Good: typed containers, `Set[T]`, `SyncMap[K,V]`, eliminating `any` casts. Bad: one concrete type, premature abstraction. Wait for 3+ implementations.
 
-20. **Prefer config structs, not functional options.** Few required params: plain constructor. Optional settings: config struct with zero-value defaults and validation. Exactly-one-of choices: interface field on the config struct. Stateful construction order: builder. All configuration for a service should be discoverable from a single type or location — a reviewer should be able to answer "what does this service connect to?" without grepping. See [references/design.md](references/design.md).
+20. **Project default — prefer config structs, not functional options.** Few required params: plain constructor. Optional settings: config struct with zero-value defaults and validation. At-most-one choices: interface field on the config struct; `Validate()` enforces required-one. Stateful construction order: builder. All configuration for a service should be discoverable from a single type or location — a reviewer should be able to answer "what does this service connect to?" without grepping. This intentionally diverges from Uber's public-API guidance in favor of inspectable service configuration; use functional options when extending an existing option-based API or matching ecosystem conventions. See [references/design.md](references/design.md).
 
-21. **CLIs use Kong** (for new code). Use `github.com/alecthomas/kong` for command-line parsing. Decide source ownership early: Kong handles flags and commands only; the config package handles env, files, and secrets. Do not use Kong `env:"..."` tags for application config values like `DATABASE_URL`. In existing codebases, preserve the current CLI framework.
+21. **Project default — CLIs use Kong** (for new code). Use `github.com/alecthomas/kong` for command-line parsing. Decide source ownership early: Kong handles flags and commands only; the config package handles env, files, and secrets. Do not use Kong `env:"..."` tags for application config values like `DATABASE_URL`. In existing codebases, preserve the current CLI framework.
 
-22. **Naming.** Name length ~ distance from declaration to use. All-caps acronyms (`HTTPServer`). No `Get` prefix on getters. Package name is part of the identifier. No `util`/`common`/`helpers`.
+22. **Style preference — naming.** Name length ~ distance from declaration to use. All-caps acronyms (`HTTPServer`). No `Get` prefix on getters. Package name is part of the identifier. No `util`/`common`/`helpers`.
 
-23. **Uber style details matter.** Non-pointer mutex fields; never embed mutexes. Use comma-ok type assertions. Use `time.Time`/`time.Duration`. Prefer nil slices for empty results unless wire semantics require `[]`. Avoid built-in names and naked bools. Defer cleanup by default. Start enums at one unless zero is meaningful.
+23. **Style preference — Uber style details matter.** Non-pointer mutex fields; never embed mutexes. Use comma-ok type assertions. Use `time.Time`/`time.Duration`. Prefer nil slices for empty results unless wire semantics require `[]`. Avoid built-in names and naked bools. Defer cleanup by default. Start enums at one unless zero is meaningful.
 
-24. **Enforce with linters.** `golangci-lint` in CI and pre-commit. Config: [assets/golangci.yml](assets/golangci.yml). Rationale: [references/linting.md](references/linting.md).
+24. **Project default — enforce with linters.** `golangci-lint` in CI and pre-commit. Config: [assets/golangci.yml](assets/golangci.yml). Rationale: [references/linting.md](references/linting.md).
 
 ## Performance
 

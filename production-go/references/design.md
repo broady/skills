@@ -274,7 +274,7 @@ func Transfer(from, to AccountID, amount Cents) error
 | Few params, all required | Plain constructor: `NewStore(db, logger)` |
 | Optional settings, good defaults | Config struct with zero-value defaults |
 | Serializable/loaded settings | Config struct with explicit tags |
-| Exactly one of N strategies | Interface field on config struct |
+| At most one of N strategies; require one | Interface field on config struct + `Validate() error` |
 | Cross-field validation rules | Config struct + `Validate() error` |
 | Valid-next depends on what-came-before | Builder, optionally with type-state |
 
@@ -312,8 +312,9 @@ func NewClient(logger *slog.Logger, cfg ClientConfig) (*Client, error) {
 ```
 
 Use interfaces inside config structs for substitutable dependencies or
-exactly-one-of choices. Required dependencies may remain explicit constructor
-parameters when that makes ownership clearer.
+at-most-one choices. Add `Validate()` when one choice is required. Required
+dependencies may remain explicit constructor parameters when that makes
+ownership clearer.
 
 ### Config structs for loaded settings
 
@@ -344,8 +345,10 @@ what they care about. The struct literal is self-documenting.
 
 ### Interface fields for mutually exclusive choices
 
-Functional options can't express "exactly one of" — they're a flat list. An
+Functional options can't express "at most one of" — they're a flat list. An
 interface field on the config struct enforces mutual exclusion at compile time.
+A nil interface field still compiles, so `Validate()` enforces that one strategy
+is required.
 
 ```go
 // Sealed interface — only this package defines implementations.
@@ -364,11 +367,18 @@ type GRPCTransport struct {
 func (GRPCTransport) transport() {}
 
 type ClientConfig struct {
-	Transport Transport // exactly one — compiler enforces it
+	Transport Transport // at most one concrete strategy; Validate requires one
 	RetryMax  int
 }
 
-// Usage: the caller MUST choose, and CAN'T choose two.
+func (c ClientConfig) Validate() error {
+	if c.Transport == nil {
+		return errors.New("transport is required")
+	}
+	return nil
+}
+
+// Usage: the caller chooses one, and can't choose two.
 client := NewClient(ClientConfig{
 	Transport: GRPCTransport{Addr: "localhost:9090"},
 	RetryMax:  3,
@@ -435,11 +445,13 @@ func (p PipelineReady) Build() (*Pipeline, error) {
 pipe, err := NewPipeline().From("input.csv").To("output.parquet").Build()
 ```
 
-### Functional options are discouraged
+### Functional options are discouraged for service config
 
 Functional options (`WithFoo(...)`) are a flat list of closures. Avoid adding
 them in new code unless you are extending an existing option-based API or
-wrapping an ecosystem API that already uses them. Problems:
+wrapping an ecosystem API that already uses them. This intentionally diverges
+from Uber's public-API guidance: for production services, inspectable config
+usually matters more than call-site fluency. Problems:
 
 - **No mutual exclusion**: callers can pass `WithHTTP(...)` AND `WithGRPC(...)`
   — the last one silently wins, or you add runtime validation that the type
@@ -451,8 +463,8 @@ wrapping an ecosystem API that already uses them. Problems:
   pass the complete configuration around.
 
 Use config structs for optional and serializable settings. Use interface fields
-for exactly-one-of choices. Use builders when valid next steps depend on
-construction order.
+for at-most-one choices and `Validate()` when one is required. Use builders when
+valid next steps depend on construction order.
 
 Require at least one item when an empty collection is nonsensical:
 

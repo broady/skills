@@ -39,6 +39,7 @@ that share a lifecycle. The first error cancels the group's context.
 ```go
 func (s *Server) processAll(ctx context.Context, items []Item) error {
 	g, ctx := errgroup.WithContext(ctx)
+	g.SetLimit(s.MaxConcurrent)
 	for _, item := range items {
 		g.Go(func() error {
 			return s.process(ctx, item)
@@ -57,7 +58,14 @@ all others are interrupted.
 ```go
 var g run.Group
 
-httpSrv := &http.Server{Addr: ":8080", Handler: mux}
+httpSrv := &http.Server{
+    Addr:              cfg.HTTPAddr,
+    Handler:           mux,
+    ReadHeaderTimeout: cfg.HTTPReadHeaderTimeout,
+    ReadTimeout:       cfg.HTTPReadTimeout,
+    WriteTimeout:      cfg.HTTPWriteTimeout,
+    IdleTimeout:       cfg.HTTPIdleTimeout,
+}
 g.Add(
     func() error {
         err := httpSrv.ListenAndServe()
@@ -70,7 +78,11 @@ g.Add(
         ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
         defer cancel()
         if err := httpSrv.Shutdown(ctx); err != nil {
-            logger.Error("shutdown http server", "err", err)
+            logger.LogAttrs(context.Background(), slog.LevelWarn,
+                "graceful shutdown timed out, forcing close",
+                slog.Any("err", err),
+            )
+            _ = httpSrv.Close()
         }
     },
 )
@@ -132,7 +144,7 @@ small `Group` interface is satisfied by `*errgroup.Group`.
 
 ```go
 g, ctx := errgroup.WithContext(ctx)
-g.SetLimit(10)
+// Naturally bounded: exactly one supervised goroutine.
 safe.Go(g, "flush metrics", func() error {
 	return flusher.Run(ctx)
 })
@@ -169,7 +181,10 @@ results := safe.Collect(ctx, 10, urls, func(ctx context.Context, url string) (fe
 images := make(map[string]image.Image, len(results))
 for _, r := range results {
     if r.Err != nil {
-        logger.WarnContext(ctx, "prefetch failed", "url", r.Val.URL, "err", r.Err)
+        logger.LogAttrs(ctx, slog.LevelWarn, "prefetch failed",
+            slog.String("url", r.Val.URL),
+            slog.Any("err", r.Err),
+        )
         continue
     }
     images[r.Val.URL] = r.Val.Img
@@ -234,6 +249,7 @@ func (p *ImageProcessor) Resize(ctx context.Context, img Image) (Image, error) {
 ```go
 func processStream(ctx context.Context, items <-chan Item, numWorkers int) error {
     g, ctx := errgroup.WithContext(ctx)
+    // Naturally bounded: exactly numWorkers supervised goroutines.
     for range numWorkers {
         g.Go(func() error {
             for {
@@ -368,6 +384,7 @@ a public `syncs.MutexValue[T]` with the same API shape.
 // Signaling
 done := make(chan struct{})
 g, ctx := errgroup.WithContext(ctx)
+// Naturally bounded: exactly one supervised goroutine.
 g.Go(func() error {
 	defer close(done)
 	return runTask(ctx)
@@ -410,7 +427,7 @@ if result.Err != nil {
 
 ### Channel size rule
 
-**0 or 1. Any other size needs a comment.**
+**0 or 1 by default. Any other size needs a comment.**
 
 ```go
 make(chan Event)          // fine: synchronous handoff
@@ -418,8 +435,18 @@ make(chan Result, 1)      // fine: one-shot future
 make(chan LogEntry, 4096) // REQUIRES justifying comment
 ```
 
-If you need a buffered channel > 1, you probably want errgroup.SetLimit,
-a semaphore, or a ring buffer instead.
+`chan Result` with capacity `len(items)` is allowed only for finite fan-in when
+`items` is already explicitly bounded, each producer sends at most once, there
+is a separate concurrency limit, and the memory cost is acceptable. It always
+needs a short justification comment:
+
+```go
+results := make(chan Result, len(items)) // bounded fan-in: len(items) <= maxBatchSize; one send per item; not a work queue
+```
+
+If you need a buffered channel > 1, you probably want `errgroup.SetLimit`,
+`safe.Collect`, a preallocated result slice, a mutex-protected collection, a
+semaphore, or a ring buffer instead.
 
 ---
 
@@ -463,13 +490,13 @@ func (f *Flusher) Run(ctx context.Context) error {
             // Final flush before exit
             flushCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
             if err := f.buffer.Flush(flushCtx); err != nil {
-                f.logger.ErrorContext(ctx, "final flush failed", "err", err)
+                f.logger.LogAttrs(ctx, slog.LevelError, "final flush failed", slog.Any("err", err))
             }
             cancel()
             return ctx.Err()
         case <-ticker.C:
             if err := f.buffer.Flush(ctx); err != nil {
-                f.logger.ErrorContext(ctx, "periodic flush failed", "err", err)
+                f.logger.LogAttrs(ctx, slog.LevelError, "periodic flush failed", slog.Any("err", err))
             }
         }
     }
@@ -536,9 +563,9 @@ At the boundary, log both the category and the cause:
 
 ```go
 if ctx.Err() != nil {
-    logger.ErrorContext(ctx, "request failed",
-        "err", ctx.Err(),            // "context canceled" or "context deadline exceeded"
-        "cause", context.Cause(ctx), // "order ord-123: 5s processing timeout"
+    logger.LogAttrs(ctx, slog.LevelError, "request failed",
+        slog.Any("err", ctx.Err()),            // "context canceled" or "context deadline exceeded"
+        slog.Any("cause", context.Cause(ctx)), // "order ord-123: 5s processing timeout"
     )
 }
 ```
@@ -764,6 +791,7 @@ func TestWorkerShutdown(t *testing.T) {
     ctx, cancel := context.WithCancel(t.Context())
     g, ctx := errgroup.WithContext(ctx)
     w := NewWorker()
+    // Naturally bounded: exactly one supervised goroutine.
     g.Go(func() error {
         return w.Run(ctx)
     })

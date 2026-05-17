@@ -168,12 +168,13 @@ func TestCollectEmptySlice(t *testing.T) {
 	}
 }
 
-func TestCollectPanicsOnZeroLimit(t *testing.T) {
+func TestCollectPanicsForNonPositiveLimit(t *testing.T) {
 	defer func() {
-		if r := recover(); r == nil {
-			t.Fatal("expected panic for limit <= 0")
+		if recover() == nil {
+			t.Fatal("expected panic for non-positive limit")
 		}
 	}()
+
 	Collect(context.Background(), 0, []int{1}, func(_ context.Context, n int) (int, error) {
 		return n, nil
 	})

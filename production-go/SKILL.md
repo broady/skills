@@ -145,7 +145,7 @@ Load a reference file only when the task involves its domain. Skip unrelated one
 
 | File | Covers | Load when... |
 |---|---|---|
-| [references/concurrency.md](references/concurrency.md) | Structured concurrency model, goroutine lifecycle, workers, sync vs channels, closure pitfalls | Spawning goroutines, channels, workers, shared state |
+| [references/concurrency.md](references/concurrency.md) | Structured concurrency model, goroutine lifecycle, workers, sync vs channels, closure pitfalls, leak detection (goleak), deterministic time testing (synctest), cancellation causes | Spawning goroutines, channels, workers, shared state, leak detection, testing time-dependent code |
 | [references/errors.md](references/errors.md) | Error types, wrapping, sentinels, boundary mapping, panic/recover | Error contracts, error handling, boundary mapping |
 | [references/config.md](references/config.md) | What belongs in config vs code, Secret type, validation, LoadConfig pattern, graduation criteria, env-only/file/CLI deviations | Config loading, adding config values, deciding what should be configurable |
 | [references/design.md](references/design.md) | Packages, DI, interfaces, API design, config structs, builders, generics, defensive copies | Package structure, constructors, public APIs, config patterns |

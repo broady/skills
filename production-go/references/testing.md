@@ -1,9 +1,7 @@
 # Testing — Production Concerns
 
-Complements the go-testing skill (table-driven tests, naming, assertions, fuzz
-targets, golden files). This file covers assertions, leak detection, property
-testing, integration infrastructure, benchmarking, race detection, fakes, and
-coverage.
+This file covers assertions, leak detection, property testing, integration
+infrastructure, benchmarking, race detection, fakes, and coverage.
 
 ## Contents
 

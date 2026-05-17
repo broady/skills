@@ -13,7 +13,6 @@ description: >
   Connect service design, Go code review, or any task where Go correctness and
   safety matter. If the user mentions Go and the code will run in a server,
   service, CLI tool, or library used by others, use this skill.
-  Complements the go-testing skill.
 license: Apache-2.0
 compatibility: Requires Go 1.26+, golangci-lint
 metadata:

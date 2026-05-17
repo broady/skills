@@ -120,6 +120,7 @@ Before finalizing, verify no violations of:
 | Run DB operations atomically | `WithTx(ctx, db, fn)` — fn receives `*sql.Tx`, pass via `Querier` interface |
 | Serve HTTP | `http.Server{}` with explicit `ReadHeaderTimeout`, `ReadTimeout`, `WriteTimeout`, `IdleTimeout` |
 | Make outgoing HTTP requests | Custom `http.Client{Timeout: ...}`. Never `http.DefaultClient` |
+| Protect outbound calls (retry, breaker, timeout) | `failsafe-go` composition per dependency — see [resilience.md](references/resilience.md) |
 | Represent a domain identifier | `type FooID string` / `type FooID int64` — not raw primitive |
 | Log | `*slog.Logger` via constructor |
 | Protect shared state | `sync.Mutex` (read-heavy: `sync.RWMutex`); compound mutations: `safe.Locked[T]` |
@@ -146,7 +147,7 @@ Load a reference file only when the task involves its domain. Skip unrelated one
 |---|---|---|
 | [references/concurrency.md](references/concurrency.md) | Structured concurrency model, goroutine lifecycle, workers, sync vs channels, closure pitfalls | Spawning goroutines, channels, workers, shared state |
 | [references/errors.md](references/errors.md) | Error types, wrapping, sentinels, boundary mapping, panic/recover | Error contracts, error handling, boundary mapping |
-| [references/config.md](references/config.md) | Typed config struct, explicit loader, source precedence, secrets, Secret type, validation, YAML/TOML + env overlay, deviation table (env tags, koanf, Kong) | Config loading, config structure, secrets handling, adding config values |
+| [references/config.md](references/config.md) | What belongs in config vs code, Secret type, validation, LoadConfig pattern, graduation criteria, env-only/file/CLI deviations | Config loading, adding config values, deciding what should be configurable |
 | [references/design.md](references/design.md) | Packages, DI, interfaces, API design, config structs, builders, generics, defensive copies | Package structure, constructors, public APIs, config patterns |
 | [references/testing.md](references/testing.md) | goleak, property testing, integration tests, benchmarks, fakes | Writing tests for concurrent code, integration infra, benchmarks |
 | [references/linting.md](references/linting.md) | golangci-lint config, linter rationale, CI setup | Configuring linters, CI pipeline |

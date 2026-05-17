@@ -37,9 +37,15 @@ func (c *Consumer[T]) Run(ctx context.Context) error {
 
 ## Retry with backoff
 
-For transient failures (downstream timeout, temporary unavailability), retry
-with exponential backoff and jitter. Bound attempts, and require callers to pass
-a deadline-bearing context when total duration matters:
+For transient failures in **background/async processing** (downstream timeout,
+temporary unavailability), retry with exponential backoff and jitter. Bound
+attempts, and require callers to pass a deadline-bearing context when total
+duration matters.
+
+This pattern is for broker consumers and background jobs where longer backoff
+(up to 30s) is acceptable. For **request-path retry** (inside an HTTP handler
+serving a user), use shorter backoff (500ms-2s), retry budgets, and
+failsafe-go — see [resilience.md](../resilience.md).
 
 ```go
 func retry(ctx context.Context, maxAttempts int, base time.Duration, fn func(ctx context.Context) error) error {

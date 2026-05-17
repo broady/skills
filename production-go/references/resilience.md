@@ -194,12 +194,22 @@ func isDownstreamFailure(resp *http.Response, err error) bool {
     }
 }
 
-var dependencyBreaker = circuitbreaker.NewBuilder[*http.Response]().
-    HandleIf(isDownstreamFailure).
-    WithFailureRateThreshold(0.50, 20, 30*time.Second).
-    WithDelay(30 * time.Second).
-    WithSuccessThreshold(3).
-    Build()
+type DependencyClient struct {
+    httpClient *http.Client
+    breaker    circuitbreaker.CircuitBreaker[*http.Response]
+}
+
+func NewDependencyClient(httpClient *http.Client) *DependencyClient {
+    return &DependencyClient{
+        httpClient: httpClient,
+        breaker: circuitbreaker.NewBuilder[*http.Response]().
+            HandleIf(isDownstreamFailure).
+            WithFailureRateThreshold(0.50, 20, 30*time.Second).
+            WithDelay(30 * time.Second).
+            WithSuccessThreshold(3).
+            Build(),
+    }
+}
 ```
 
 Standalone gobreaker version:
@@ -219,24 +229,32 @@ type Result struct {
     Value string
 }
 
-var cb = gobreaker.NewCircuitBreaker[Result](gobreaker.Settings{
-    Name:        "inventory-api",
-    MaxRequests: 2,                // half-open probes
-    Interval:    60 * time.Second, // rolling window reset
-    Timeout:     30 * time.Second, // open-state cooldown
-    ReadyToTrip: func(c gobreaker.Counts) bool {
-        if c.Requests < 20 {
-            return false
-        }
-        return float64(c.TotalFailures)/float64(c.Requests) >= 0.50
-    },
-    IsExcluded: func(err error) bool {
-        return errors.Is(err, context.Canceled)
-    },
-})
+type InventoryClient struct {
+    cb *gobreaker.CircuitBreaker[Result]
+}
 
-func Call(ctx context.Context) (Result, error) {
-    return cb.Execute(func() (Result, error) {
+func NewInventoryClient() *InventoryClient {
+    return &InventoryClient{
+        cb: gobreaker.NewCircuitBreaker[Result](gobreaker.Settings{
+            Name:        "inventory-api",
+            MaxRequests: 2,                // half-open probes
+            Interval:    60 * time.Second, // rolling window reset
+            Timeout:     30 * time.Second, // open-state cooldown
+            ReadyToTrip: func(c gobreaker.Counts) bool {
+                if c.Requests < 20 {
+                    return false
+                }
+                return float64(c.TotalFailures)/float64(c.Requests) >= 0.50
+            },
+            IsExcluded: func(err error) bool {
+                return errors.Is(err, context.Canceled)
+            },
+        }),
+    }
+}
+
+func (c *InventoryClient) Call(ctx context.Context) (Result, error) {
+    return c.cb.Execute(func() (Result, error) {
         return doRemoteCall(ctx)
     })
 }
@@ -323,11 +341,6 @@ import (
     "github.com/failsafe-go/failsafe-go/retrypolicy"
 )
 
-var retryBudget = budget.NewBuilder().
-    WithMaxRate(0.20).     // retries <= 20% of original traffic
-    WithMinConcurrency(3). // small services still get a floor
-    Build()
-
 func retryableHTTP(resp *http.Response, err error) bool {
     if errors.Is(err, context.Canceled) {
         return false
@@ -349,24 +362,41 @@ func retryableHTTP(resp *http.Response, err error) bool {
     }
 }
 
-var retryPolicy = retrypolicy.NewBuilder[*http.Response]().
-    HandleIf(retryableHTTP).
-    AbortOnErrors(context.Canceled).
-    WithBackoff(50*time.Millisecond, 1*time.Second).
-    WithJitterFactor(0.5).
-    WithMaxRetries(2).
-    WithBudget(retryBudget).
-    Build()
+type RetryingClient struct {
+    httpClient  *http.Client
+    retryBudget budget.Budget
+    retryPolicy retrypolicy.RetryPolicy[*http.Response]
+}
 
-func Get(ctx context.Context, url string, client *http.Client) (*http.Response, error) {
-    return failsafe.With[*http.Response](retryPolicy).
+func NewRetryingClient(httpClient *http.Client) *RetryingClient {
+    b := budget.NewBuilder().
+        WithMaxRate(0.20).     // retries <= 20% of original traffic
+        WithMinConcurrency(3). // small services still get a floor
+        Build()
+
+    return &RetryingClient{
+        httpClient:  httpClient,
+        retryBudget: b,
+        retryPolicy: retrypolicy.NewBuilder[*http.Response]().
+            HandleIf(retryableHTTP).
+            AbortOnErrors(context.Canceled).
+            WithBackoff(50*time.Millisecond, 1*time.Second).
+            WithJitterFactor(0.5).
+            WithMaxRetries(2).
+            WithBudget(b).
+            Build(),
+    }
+}
+
+func (c *RetryingClient) Get(ctx context.Context, url string) (*http.Response, error) {
+    return failsafe.With[*http.Response](c.retryPolicy).
         WithContext(ctx).
         GetWithExecution(func(exec failsafe.Execution[*http.Response]) (*http.Response, error) {
             req, err := http.NewRequestWithContext(exec.Context(), http.MethodGet, url, nil)
             if err != nil {
                 return nil, err
             }
-            return client.Do(req)
+            return c.httpClient.Do(req)
         })
 }
 ```
@@ -457,6 +487,7 @@ func NewHandler(app http.Handler) http.Handler {
 package inbound
 
 import (
+    "encoding/json"
     "net/http"
     "strconv"
     "time"
@@ -473,7 +504,11 @@ func StaticConcurrencyShedder(maxConcurrent int64, retryAfter time.Duration) fun
                 if retryAfter > 0 {
                     w.Header().Set("Retry-After", strconv.Itoa(int(retryAfter.Seconds())))
                 }
-                http.Error(w, "overloaded", http.StatusServiceUnavailable)
+                w.Header().Set("Content-Type", "application/json")
+                w.WriteHeader(http.StatusServiceUnavailable)
+                json.NewEncoder(w).Encode(struct {
+                    Error string `json:"error"`
+                }{Error: "service overloaded"})
                 return
             }
             defer sem.Release(1)
@@ -578,25 +613,35 @@ import (
     "github.com/failsafe-go/failsafe-go/hedgepolicy"
 )
 
-var p95Millis atomic.Int64
+type HedgingClient struct {
+    p95Millis       atomic.Int64
+    extraWorkBudget budget.Budget
+    hedge           hedgepolicy.HedgePolicy[*http.Response]
+}
 
-var extraWorkBudget = budget.NewBuilder().
-    WithMaxRate(0.10).
-    WithMinConcurrency(1).
-    Build()
+func NewHedgingClient() *HedgingClient {
+    c := &HedgingClient{}
 
-var hedge = hedgepolicy.NewBuilderWithDelayFunc[*http.Response](
-    func(exec failsafe.ExecutionAttempt[*http.Response]) time.Duration {
-        p := p95Millis.Load()
-        if p <= 0 {
-            return 50 * time.Millisecond
-        }
-        return time.Duration(p) * time.Millisecond
-    },
-).
-    WithMaxHedges(1).
-    WithBudget(extraWorkBudget).
-    Build()
+    c.extraWorkBudget = budget.NewBuilder().
+        WithMaxRate(0.10).
+        WithMinConcurrency(1).
+        Build()
+
+    c.hedge = hedgepolicy.NewBuilderWithDelayFunc[*http.Response](
+        func(exec failsafe.ExecutionAttempt[*http.Response]) time.Duration {
+            p := c.p95Millis.Load()
+            if p <= 0 {
+                return 50 * time.Millisecond
+            }
+            return time.Duration(p) * time.Millisecond
+        },
+    ).
+        WithMaxHedges(1).
+        WithBudget(c.extraWorkBudget).
+        Build()
+
+    return c
+}
 ```
 
 ### Interactions
@@ -665,27 +710,26 @@ Baseline: 250 x 0.08 = 20. Start around 25-40.
 ### Go implementation: Failsafe-go
 
 ```go
-var paymentsBulkhead = bulkhead.NewBuilder[any](40).
-    WithMaxWaitTime(20 * time.Millisecond).
-    Build()
+type PaymentsClient struct {
+    httpClient *http.Client
+    bulkhead   bulkhead.Bulkhead[any]
+}
+
+func NewPaymentsClient(httpClient *http.Client) *PaymentsClient {
+    return &PaymentsClient{
+        httpClient: httpClient,
+        bulkhead: bulkhead.NewBuilder[any](40).
+            WithMaxWaitTime(20 * time.Millisecond).
+            Build(),
+    }
+}
 ```
 
 ### Go implementation: dedicated HTTP transport
 
-```go
-func NewDependencyHTTPClient(maxConns int) *http.Client {
-    tr := &http.Transport{
-        MaxConnsPerHost:     maxConns,
-        MaxIdleConns:        maxConns * 2,
-        MaxIdleConnsPerHost: maxConns,
-        IdleConnTimeout:     90 * time.Second,
-        TLSHandshakeTimeout: 200 * time.Millisecond,
-    }
-    return &http.Client{Transport: tr}
-}
-```
-
-Generate one client/transport per downstream class when limits differ.
+Use the full HTTP client template from [Timeouts as a System](#7-timeouts-as-a-system),
+setting `maxConnsPerHost` to match the bulkhead size. Generate one client/transport
+per downstream class when limits differ.
 
 ### Go implementation: semaphore bulkhead
 
@@ -764,11 +808,18 @@ func WriteOverload(w http.ResponseWriter, perClient bool, retryAfter time.Durati
         }
         w.Header().Set("Retry-After", strconv.Itoa(seconds))
     }
+    w.Header().Set("Content-Type", "application/json")
     if perClient {
-        http.Error(w, "too many requests", http.StatusTooManyRequests)
+        w.WriteHeader(http.StatusTooManyRequests)
+        json.NewEncoder(w).Encode(struct {
+            Error string `json:"error"`
+        }{Error: "too many requests"})
         return
     }
-    http.Error(w, "service overloaded", http.StatusServiceUnavailable)
+    w.WriteHeader(http.StatusServiceUnavailable)
+    json.NewEncoder(w).Encode(struct {
+        Error string `json:"error"`
+    }{Error: "service overloaded"})
 }
 ```
 
@@ -931,12 +982,11 @@ func NewHTTPClient(maxConnsPerHost int) *http.Client {
 
 ```go
 srv := &http.Server{
-    Addr:              ":8080",
     Handler:           handler,
-    ReadHeaderTimeout: 2 * time.Second,
-    ReadTimeout:       10 * time.Second,
-    WriteTimeout:      15 * time.Second,
-    IdleTimeout:       60 * time.Second,
+    ReadHeaderTimeout: 5 * time.Second,
+    ReadTimeout:       15 * time.Second,
+    WriteTimeout:      30 * time.Second,
+    IdleTimeout:       2 * time.Minute,
     MaxHeaderBytes:    1 << 20,
 }
 ```
@@ -1025,6 +1075,10 @@ deadline_remaining_ms{endpoint}
 
 Do not mix fast shed/open-circuit failures into successful downstream latency
 histograms.
+
+Label names follow OTel semantic conventions where applicable (e.g., `http.method`,
+`http.status_code`). The labels shown here (`dependency`, `method`, `outcome`) are
+application-domain attributes without an OTel convention.
 
 ### Testing requirements
 

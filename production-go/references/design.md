@@ -46,14 +46,15 @@ service with 30-40 dependencies is still tractable when wiring is grouped into a
 few small `newX(...)` helpers.
 
 ```go
-// GOOD: explicit wiring in main()
-func run(ctx context.Context) error {
-	db := postgres.Open(os.Getenv("DATABASE_URL"))
-	cache := redis.New(os.Getenv("REDIS_URL"))
+// GOOD: explicit wiring in main(). Config is loaded once, then values are
+// passed to constructors. See references/config.md for the full pattern.
+func run(ctx context.Context, cfg *Config) error {
+	db := postgres.Open(cfg.DatabaseURL)
+	cache := redis.New(cfg.RedisURL)
 	users := user.NewService(db, cache)
 	orders := order.NewService(db, users)
 	srv := api.NewServer(users, orders)
-	if err := srv.ListenAndServe(":8080"); err != nil && !errors.Is(err, http.ErrServerClosed) {
+	if err := srv.ListenAndServe(cfg.Addr); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return fmt.Errorf("serve http: %w", err)
 	}
 	return nil
@@ -388,7 +389,9 @@ client := NewClient(ClientConfig{
 ### Config validation
 
 When fields have cross-cutting constraints, add a `Validate` method. Call
-it at the top of the constructor.
+it at the top of the constructor. For application-level config, `LoadConfig()`
+also calls `Validate()` before construction (see [config.md](config.md)) —
+both layers can coexist since validation is idempotent.
 
 ```go
 func (c ServerConfig) Validate() error {

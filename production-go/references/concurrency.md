@@ -264,6 +264,10 @@ func NewImageProcessor(max int64) *ImageProcessor {
 }
 
 func (p *ImageProcessor) Resize(ctx context.Context, img Image) (Image, error) {
+    // Blocking Acquire: waits for capacity (suitable for worker queuing).
+    // For load-shedding / bulkhead scenarios where you want to reject
+    // immediately when full, use sem.TryAcquire(1) instead — see
+    // references/resilience.md.
     if err := p.sem.Acquire(ctx, 1); err != nil {
         return Image{}, fmt.Errorf("acquire semaphore: %w", err)
     }
@@ -917,5 +921,5 @@ profile is complementary for production observability.
 | Need a pipeline? | Bounded channel + worker goroutines via errgroup |
 | Need multiple subsystems? | `oklog/run.Group` |
 | Need periodic background work? | `time.Ticker` + `select` on `ctx.Done()` |
-| Need rate limiting? | `golang.org/x/time/rate.Limiter` |
+| Need contractual rate limiting? | `golang.org/x/time/rate.Limiter` (enforces "N per second" contracts; not a substitute for adaptive load shedding — see [resilience.md](resilience.md)) |
 | Need to detect goroutine leaks? | `go.uber.org/goleak` |

@@ -11,68 +11,62 @@ CLI setup, configuration loading, and complete main.go with shutdown flow.
 ## CLI and Configuration
 
 Project default: use `github.com/alecthomas/kong` for new CLIs. Kong owns
-command and flag parsing only.
+command and flag parsing.
+The config package owns env vars, config files, and secrets. Do not use Kong
+`env:"..."` tags for application config values if the config package also reads
+env; two sources claiming `DATABASE_URL` will eventually disagree.
 
 Clean split:
 - Kong parses flags such as `--config`, `--log-level`, and subcommands.
-- `LoadConfig` reads env, files, and secrets once.
+- `loadConfig` reads env, files, and secrets once.
 - Commands receive the parsed `*Config` from construction or `BeforeApply`.
 
-For the full config loading philosophy (what belongs in config, what doesn't,
-file + env overlay, secrets, validation), see [config.md](../config.md).
-
-**Key principle:** config is for values that actually differ between deployments.
-HTTP timeouts, pool lifetimes, max header sizes, and similar operational knobs
-are engineering decisions -- they belong in code as constants. They graduate to
-config only when a concrete operational reason demands per-deployment tuning.
+See [config.md](../config.md) for the full philosophy on what belongs in config
+vs code, the `Secret` type, validation guidance, and deviation patterns.
 
 ```go
 type CLI struct {
-    Config   string `type:"path" help:"Path to config file."`
-    LogLevel string `default:"info" enum:"debug,info,warn,error" help:"Log level."`
+	ConfigPath string `help:"Path to config file." type:"path"`
+	LogLevel   string `help:"Log level override." enum:"debug,info,warn,error"`
 
-    Serve ServeCmd `cmd:"" default:"withargs" help:"Run the server."`
+	Serve ServeCmd `cmd:"" help:"Run the server."`
 }
 
 type ServeCmd struct{}
 
-// Config holds values that actually differ between deployments.
-// Engineering decisions (timeouts, pool lifetimes) stay in code.
+// Config holds values that actually vary between deployments. HTTP timeouts,
+// DB pool lifetimes, and shutdown deadlines are engineering decisions -- they
+// live in code as constants. See references/config.md for graduation criteria.
 type Config struct {
-    Addr        string // listen address
-    DatabaseURL Secret // connection string (secret)
-    PaymentsURL string // downstream service
-
-    // Graduated: pool size depends on deployment tier.
-    DBMaxConns int
+	HTTPAddr    string
+	GRPCAddr    string
+	DatabaseURL string
+	DBMaxConns  int32
+	LogLevel    slog.Level
 }
 
 func (c Config) Validate() error {
-    var errs []error
-    if c.Addr == "" {
-        errs = append(errs, errors.New("addr is required"))
-    }
-    if c.DatabaseURL.Value() == "" {
-        errs = append(errs, errors.New("database_url is required"))
-    }
-    if c.PaymentsURL == "" {
-        errs = append(errs, errors.New("payments_url is required"))
-    }
-    if c.DBMaxConns < 1 {
-        errs = append(errs, errors.New("db_max_conns must be >= 1"))
-    }
-    return errors.Join(errs...)
+	if c.DatabaseURL == "" {
+		return fmt.Errorf("database url required")
+	}
+	if c.DBMaxConns <= 0 {
+		return fmt.Errorf("db max conns must be positive")
+	}
+	return nil
 }
 
 type App struct {
-    Config *Config
-    Logger *slog.Logger
+	Config *Config
+	Logger *slog.Logger
 }
 
 func (c *ServeCmd) Run(app *App) error {
-    return runServer(app.Config, app.Logger)
+	return runServer(app.Config, app.Logger)
 }
 ```
+
+The full `main()`, `runCLI()`, and `loadConfig()` are shown in the complete
+scaffold below.
 
 ## Complete main.go
 
@@ -86,242 +80,233 @@ interrupt funcs are called. `Run` then waits for all to finish.
 package main
 
 import (
-    "context"
-    "database/sql"
-    "errors"
-    "fmt"
-    "log/slog"
-    "net"
-    "net/http"
-    "os"
-    "strings"
-    "syscall"
-    "time"
+	"context"
+	"database/sql"
+	"errors"
+	"fmt"
+	"log/slog"
+	"net"
+	"net/http"
+	"os"
+	"os/signal"
+	"strconv"
+	"syscall"
+	"time"
 
-    "github.com/alecthomas/kong"
-    _ "github.com/jackc/pgx/v5/stdlib"
-    "github.com/oklog/run"
+	"github.com/alecthomas/kong"
+	_ "github.com/jackc/pgx/v5/stdlib"
+	"github.com/oklog/run"
 )
 
 func main() {
-    var cli CLI
-    ctx := kong.Parse(&cli)
-
-    cfg, err := LoadConfig(cli.Config)
-    if err != nil {
-        fmt.Fprintf(os.Stderr, "config: %v\n", err)
-        os.Exit(1)
-    }
-
-    logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
-        Level: parseLogLevel(cli.LogLevel),
-    }))
-
-    if err := ctx.Run(&App{Config: cfg, Logger: logger}); err != nil {
-        logger.LogAttrs(context.Background(), slog.LevelError, "exit", slog.Any("err", err))
-        os.Exit(1)
-    }
+	if err := runCLI(); err != nil {
+		logger := slog.New(slog.NewJSONHandler(os.Stderr, nil))
+		logger.LogAttrs(context.Background(), slog.LevelError, "exit", slog.Any("err", err))
+		os.Exit(1)
+	}
 }
 
-func parseLogLevel(s string) slog.Level {
-    var l slog.Level
-    _ = l.UnmarshalText([]byte(s))
-    return l
+func runCLI() error {
+	var cli CLI
+	ctx := kong.Parse(&cli)
+
+	cfg, err := loadConfig(cli.ConfigPath, cli.LogLevel)
+	if err != nil {
+		return fmt.Errorf("load config: %w", err)
+	}
+	if err := cfg.Validate(); err != nil {
+		return fmt.Errorf("validate config: %w", err)
+	}
+	logger := newLogger(cfg)
+
+	if err := ctx.Run(&App{
+		Config: cfg,
+		Logger: logger,
+	}); err != nil {
+		return fmt.Errorf("run command: %w", err)
+	}
+	return nil
 }
 
-// --- Config: what actually varies between deployments ---
-
-func LoadConfig(configPath string) (*Config, error) {
-    cfg := &Config{
-        Addr:       ":8080",
-        DBMaxConns: 16,
-    }
-
-    if configPath != "" {
-        if err := loadConfigFile(configPath, cfg); err != nil {
-            return nil, fmt.Errorf("load config file: %w", err)
-        }
-    }
-
-    // Env overlay: only values that differ per deployment.
-    envStr("ADDR", &cfg.Addr)
-    envStr("PAYMENTS_URL", &cfg.PaymentsURL)
-    envInt("DB_MAX_CONNS", &cfg.DBMaxConns)
-
-    if err := envSecret("DATABASE_URL", &cfg.DatabaseURL); err != nil {
-        return nil, err
-    }
-
-    if err := cfg.Validate(); err != nil {
-        return nil, err
-    }
-
-    return cfg, nil
+func loadConfig(configPath, logLevelOverride string) (*Config, error) {
+	if configPath != "" {
+		return nil, fmt.Errorf("config file loading not wired: %s", configPath)
+	}
+	logLevel, err := parseLogLevel(envString("LOG_LEVEL", "info"))
+	if err != nil {
+		return nil, fmt.Errorf("parse log level: %w", err)
+	}
+	if logLevelOverride != "" {
+		logLevel, err = parseLogLevel(logLevelOverride)
+		if err != nil {
+			return nil, fmt.Errorf("parse log level override: %w", err)
+		}
+	}
+	dbMaxConns, err := envInt32("DB_MAX_CONNS", 16)
+	if err != nil {
+		return nil, err
+	}
+	cfg := &Config{
+		HTTPAddr:    envString("HTTP_ADDR", ":8080"),
+		GRPCAddr:    envString("GRPC_ADDR", ":8081"),
+		DatabaseURL: envString("DATABASE_URL", ""),
+		DBMaxConns:  dbMaxConns,
+		LogLevel:    logLevel,
+	}
+	return cfg, nil
 }
 
-func envStr(name string, dst *string) {
-    if v, ok := os.LookupEnv(name); ok {
-        *dst = v
-    }
+func newLogger(cfg *Config) *slog.Logger {
+	return slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
+		Level: cfg.LogLevel,
+	}))
 }
 
-func envInt(name string, dst *int) {
-    if v, ok := os.LookupEnv(name); ok {
-        fmt.Sscanf(v, "%d", dst)
-    }
+func parseLogLevel(value string) (slog.Level, error) {
+	var level slog.Level
+	if err := level.UnmarshalText([]byte(value)); err != nil {
+		return 0, fmt.Errorf("invalid slog level %q: %w", value, err)
+	}
+	return level, nil
 }
 
-func envSecret(name string, dst *Secret) error {
-    val, hasVal := os.LookupEnv(name)
-    path, hasFile := os.LookupEnv(name + "_FILE")
-
-    if hasVal && hasFile {
-        return fmt.Errorf("%s and %s_FILE are mutually exclusive", name, name)
-    }
-    if hasFile {
-        b, err := os.ReadFile(path)
-        if err != nil {
-            return fmt.Errorf("read %s_FILE: %w", name, err)
-        }
-        dst.value = strings.TrimRight(string(b), "\r\n")
-        return nil
-    }
-    if hasVal {
-        dst.value = val
-    }
-    return nil
+func envString(name, fallback string) string {
+	value, ok := os.LookupEnv(name)
+	if !ok {
+		return fallback
+	}
+	return value
 }
 
-// --- Server ---
+func envInt32(name string, fallback int32) (int32, error) {
+	value, ok := os.LookupEnv(name)
+	if !ok {
+		return fallback, nil
+	}
+	parsed, err := strconv.ParseInt(value, 10, 32)
+	if err != nil {
+		return 0, fmt.Errorf("parse %s: %w", name, err)
+	}
+	return int32(parsed), nil
+}
 
 func runServer(cfg *Config, logger *slog.Logger) error {
-    // --- Dependency wiring ---
-    db, err := connectDB(context.Background(), cfg)
-    if err != nil {
-        return fmt.Errorf("connect database: %w", err)
-    }
-    defer db.Close()
+	logger = logger.With("component", "server")
 
-    userStore := NewUserStore(db)
-    orderSvc := NewOrderService(logger, userStore)
-    httpSrv := buildHTTPServer(logger, orderSvc)
+	// --- Dependency wiring (this IS the dependency graph) ---
+	db, err := connectDB(context.Background(), cfg)
+	if err != nil {
+		return fmt.Errorf("connect database: %w", err)
+	}
+	defer db.Close()
 
-    // --- Run group ---
-    var g run.Group
+	userStore := NewUserStore(db)
+	orderSvc := NewOrderService(logger, userStore)
+	httpSrv := buildHTTPServer(logger, orderSvc)
 
-    // Actor: HTTP server
-    ln, err := net.Listen("tcp", cfg.Addr)
-    if err != nil {
-        return fmt.Errorf("listen %s: %w", cfg.Addr, err)
-    }
-    g.Add(func() error {
-        logger.LogAttrs(context.Background(), slog.LevelInfo, "serving",
-            slog.String("addr", ln.Addr().String()),
-        )
-        if err := httpSrv.Serve(ln); !errors.Is(err, http.ErrServerClosed) {
-            return fmt.Errorf("serve http: %w", err)
-        }
-        return nil
-    }, func(error) {
-        // Drain then hammer. See "Shutdown flow" below.
-        ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-        defer cancel()
-        if err := httpSrv.Shutdown(ctx); err != nil {
-            logger.LogAttrs(context.Background(), slog.LevelWarn,
-                "graceful shutdown timed out, forcing close",
-                slog.Any("err", err),
-            )
-            _ = httpSrv.Close()
-        }
-    })
+	// --- Run group ---
+	var g run.Group
 
-    // Actor: Signal handler
-    g.Add(run.SignalHandler(context.Background(), syscall.SIGTERM, syscall.SIGINT))
+	// Actor: HTTP server
+	{
+		ln, err := net.Listen("tcp", cfg.HTTPAddr)
+		if err != nil {
+			return fmt.Errorf("listen http %s: %w", cfg.HTTPAddr, err)
+		}
+		g.Add(func() error {
+			logger.LogAttrs(context.Background(), slog.LevelInfo, "http server starting",
+				slog.String("addr", ln.Addr().String()),
+			)
+			if err := httpSrv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				return fmt.Errorf("serve http: %w", err)
+			}
+			return nil
+		}, func(error) {
+			// Shutdown timeout is an engineering decision: 15s matches most
+			// orchestrator drain windows. Graduate to config if you need to
+			// vary it per deployment (see references/config.md).
+			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			defer cancel()
+			if err := httpSrv.Shutdown(ctx); err != nil {
+				logger.LogAttrs(context.Background(), slog.LevelWarn,
+					"graceful shutdown timed out, forcing close",
+					slog.Any("err", err),
+				)
+				_ = httpSrv.Close() // best effort after graceful shutdown timeout
+			}
+		})
+	}
 
-    // Actor: Background worker (uncomment as needed)
-    // ctx, cancel := context.WithCancel(context.Background())
-    // g.Add(func() error { return worker.Run(ctx) }, func(error) { cancel() })
+	// Actor: Signal handler
+	{
+		ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
+		g.Add(func() error {
+			<-ctx.Done()
+			logger.LogAttrs(context.Background(), slog.LevelInfo, "received shutdown signal")
+			return nil
+		}, func(error) {
+			cancel()
+		})
+	}
 
-    if err := g.Run(); err != nil {
-        var se run.SignalError
-        if errors.As(err, &se) {
-            logger.LogAttrs(context.Background(), slog.LevelInfo, "shutdown complete")
-            return nil
-        }
-        return fmt.Errorf("run: %w", err)
-    }
-    return nil
+	// Actor: Background worker (uncomment as needed)
+	// ctx, cancel := context.WithCancel(context.Background())
+	// g.Add(func() error { return runFlusher(ctx, logger) }, func(error) { cancel() })
+
+	logger.LogAttrs(context.Background(), slog.LevelInfo, "starting",
+		slog.String("http", cfg.HTTPAddr),
+	)
+	if err := g.Run(); err != nil {
+		return fmt.Errorf("run server: %w", err)
+	}
+	logger.LogAttrs(context.Background(), slog.LevelInfo, "shutdown complete")
+	return nil
 }
 
 func connectDB(ctx context.Context, cfg *Config) (*sql.DB, error) {
-    db, err := sql.Open("pgx", cfg.DatabaseURL.Value())
-    if err != nil {
-        return nil, fmt.Errorf("open db: %w", err)
-    }
-
-    // Engineering decisions: these are correct for our workload.
-    // They do not vary between deployments.
-    db.SetMaxOpenConns(cfg.DBMaxConns) // graduated: varies by deployment tier
-    db.SetConnMaxLifetime(30 * time.Minute)
-    db.SetConnMaxIdleTime(5 * time.Minute)
-
-    if err := db.PingContext(ctx); err != nil {
-        _ = db.Close()
-        return nil, fmt.Errorf("ping db: %w", err)
-    }
-    return db, nil
-}
-
-func buildHTTPServer(logger *slog.Logger, orderSvc *OrderService) *http.Server {
-    mux := http.NewServeMux()
-    mux.Handle("GET /api/orders/{id}", handle(logger, decodePathID("id"), orderSvc.Get))
-    mux.Handle("POST /api/orders", handle(logger, decodeJSON[CreateOrderRequest](1<<20), orderSvc.Create))
-    mux.HandleFunc("GET /healthz", handleHealthz())
-    mux.HandleFunc("GET /readyz", handleReadyz(orderSvc))
-
-    handler := withRequestID(withLogging(logger, mux))
-
-    // Engineering decisions: chosen for correctness, not tuning.
-    return &http.Server{
-        Handler:           handler,
-        ReadHeaderTimeout: 5 * time.Second,
-        ReadTimeout:       15 * time.Second,
-        WriteTimeout:      30 * time.Second,
-        IdleTimeout:       2 * time.Minute,
-        MaxHeaderBytes:    1 << 20,
-    }
+	db, err := sql.Open("pgx", cfg.DatabaseURL)
+	if err != nil {
+		return nil, fmt.Errorf("open db: %v", err)
+	}
+	db.SetMaxOpenConns(int(cfg.DBMaxConns))
+	// Engineering decisions: correct for our protocol and workload.
+	// Graduate to config when pool lifetimes need to differ per deployment.
+	db.SetConnMaxLifetime(30 * time.Minute)
+	db.SetConnMaxIdleTime(5 * time.Minute)
+	if err := db.PingContext(ctx); err != nil {
+		_ = db.Close() // best effort after failed startup ping
+		return nil, fmt.Errorf("ping db: %v", err)
+	}
+	return db, nil
 }
 ```
 
-## Shutdown flow: multi-phase
+### Shutdown flow: multi-phase
 
-Signal -> **Drain** (HTTP `Shutdown` drains in-flight, workers finish current
-item) -> **Hammer** (force-close anything still running after deadline) ->
-**Terminate** (close DB, flush telemetry) -> exit 0.
+Signal -> **Drain** (HTTP `Shutdown` drains in-flight, workers finish current item) -> **Hammer** (force-cancel anything still running after the shutdown deadline) -> **Terminate** (close DB, flush telemetry) -> exit 0.
 
 The hammer phase prevents the production bug where one hung connection blocks
-shutdown forever:
+shutdown forever. Implement it as a context with a hard deadline:
 
 ```go
+// In the interrupt func of the HTTP actor:
 func(error) {
-    // Phase 1: Drain -- give in-flight requests time to complete.
+    // Phase 1: Drain — give in-flight requests time to complete.
     ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
     defer cancel()
     if err := httpSrv.Shutdown(ctx); err != nil {
-        // Phase 2: Hammer -- drain timed out, force close.
+        // Phase 2: Hammer — drain timed out, force close.
         logger.LogAttrs(context.Background(), slog.LevelWarn,
             "graceful shutdown timed out, forcing close",
             slog.Any("err", err),
         )
-        _ = httpSrv.Close()
+        _ = httpSrv.Close() // best effort after graceful shutdown timeout
     }
 }
 ```
 
-For servers with long-lived connections (WebSocket, SSE), the hammer phase is
-essential. Without it, a single idle connection holds the process open
-indefinitely.
-
-The shutdown timeout (15s above) is an engineering decision for most services.
-Graduate it to config only if your orchestrator's drain window varies between
-deployments (e.g., ECS vs bare-metal have different SIGTERM grace periods).
+For servers with long-lived connections (WebSocket, SSE, git smart HTTP), the
+hammer phase is essential. Without it, a single idle connection holds the process
+open indefinitely. The 15s default matches most Kubernetes/orchestrator drain
+windows; graduate to config if your deployment requires a different value
+(see [config.md](../config.md)).

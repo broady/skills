@@ -208,14 +208,14 @@ func writeJSONError(w http.ResponseWriter, status int, msg string) {
 ## HTTP Server (stdlib net/http)
 
 ```go
-func buildHTTPServer(cfg *Config, logger *slog.Logger, orderSvc *OrderService) *http.Server {
+func buildHTTPServer(logger *slog.Logger, orderSvc *OrderService) *http.Server {
 	mux := http.NewServeMux()
 
 	// Each line: decode → validate → call → JSON encode.
 	mux.Handle("GET /api/orders/{id}", handle(logger, decodePathID("id"), orderSvc.Get))
 	mux.Handle("POST /api/orders", handle(
 		logger,
-		decodeJSON[CreateOrderRequest](cfg.HTTPMaxBodyBytes),
+		decodeJSON[CreateOrderRequest](1<<20), // 1 MB body limit
 		orderSvc.Create,
 	))
 	mux.HandleFunc("GET /healthz", handleHealthz())
@@ -225,12 +225,15 @@ func buildHTTPServer(cfg *Config, logger *slog.Logger, orderSvc *OrderService) *
 	// Do not add panic recovery middleware; handlers return errors.
 	handler := withRequestID(withLogging(logger, mux))
 
+	// Engineering decisions, not config — these are correct for our protocol
+	// and workload. Graduate to config only when they need to vary per
+	// deployment (see references/config.md).
 	return &http.Server{
 		Handler:           handler,
-		ReadHeaderTimeout: cfg.HTTPReadHeaderTimeout,
-		ReadTimeout:       cfg.HTTPReadTimeout,
-		WriteTimeout:      cfg.HTTPWriteTimeout,
-		IdleTimeout:       cfg.HTTPIdleTimeout,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       2 * time.Minute,
 		MaxHeaderBytes:    1 << 20, // 1 MB
 	}
 }

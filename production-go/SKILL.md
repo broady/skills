@@ -18,7 +18,7 @@ license: Apache-2.0
 compatibility: Requires Go 1.26+, golangci-lint
 metadata:
   author: cbro
-  version: "0.2"
+  version: "0.3"
   sources: >
     Dave Cheney (Practical Go), Peter Bourgon (Go for Industrial Programming),
     Bryan Mills (Rethinking Classical Concurrency Patterns), Uber Go Style Guide,
@@ -69,7 +69,7 @@ production incidents:
 | Signal completion | `context.CancelFunc` or `chan struct{}` |
 | Get one async result | `chan T` (size 1) |
 | Protect shared state | non-pointer `sync.Mutex` field (read-heavy: `sync.RWMutex`); for values needing atomic read-modify-write: `safe.Locked[T]` |
-| Lazy-initialize | `sync.Once` |
+| Lazy-initialize | `sync.OnceValue`; `sync.Once` for side-effect-only init |
 | Store a counter/flag | `go.uber.org/atomic` |
 | Pass request metadata | `context.WithValue` |
 | Pass a dependency | Constructor parameter |
@@ -79,7 +79,9 @@ production incidents:
 | Choose exactly one of N | Interface field on config struct |
 | Enforce construction order | Builder with type-state |
 | Handle an error | `fmt.Errorf("op: %w", err)` and return |
-| Report errors to callers | Map domain errors → HTTP/gRPC status at boundary |
+| Report errors to callers | Map domain errors → HTTP/gRPC status at boundary via error map |
+| Process async work durably | External broker (SQS, Pub/Sub, NATS) with ack/nack; in-process queue only for single-binary deploys |
+| Run DB operations atomically | `WithTx(ctx, db, fn)` — fn receives `*sql.Tx`, pass it explicitly to store methods via `Querier` interface |
 | Serve HTTP | `http.Server{}` with explicit `ReadHeaderTimeout`, `ReadTimeout`, `WriteTimeout`, `IdleTimeout` |
 | Make outgoing HTTP requests | Custom `http.Client{}` with `Timeout` set. Never `http.DefaultClient` or `http.Get()` in production |
 | Connect to a database | Explicit pool config: `MaxConns`, `MaxConnLifetime`, `MaxConnIdleTime` |
@@ -88,6 +90,7 @@ production incidents:
 | Instrument | OpenTelemetry SDK |
 | Build a CLI | `github.com/alecthomas/kong` for flags; config package for env/files/secrets |
 | Discover all service config | Single config struct or `loadConfig()` — a reviewer answers "what does this connect to?" from one location |
+| Ban dangerous imports | `depguard` in golangci-lint — deny `encoding/json` (use wrapper), `io/ioutil`, etc. |
 
 ## Strict Review Checklist
 
@@ -142,7 +145,7 @@ operational reason.
 These prevent production incidents. Apply them unconditionally to all code —
 new, existing, generated wrappers, and reviews.
 
-1. **No mutable globals, avoid `init()`**. Package-level `var` only for sentinel errors, compile-time interface checks, and values that are immutable by construction (embed.FS, compiled regexps, `strings.NewReplacer(...)`, `cases.Fold()`, sync.Pool with deterministic New). Package-level slices, maps, pointers, and structs with mutable fields are mutable even when treated as read-only; build them in constructors or return defensive copies. Avoid `init()`; if unavoidable, it must be deterministic, avoid I/O/env/global mutation/goroutines, and not depend on init ordering. Everything else flows through constructors. See [references/design.md](references/design.md).
+1. **No mutable globals, avoid `init()`**. Package-level `var` only for sentinel errors, compile-time interface checks, and values that are immutable by construction (embed.FS, compiled regexps, `strings.NewReplacer(...)`, `cases.Fold()`, sync.Pool with deterministic New, `sync.OnceValue` lazy singletons). Package-level slices, maps, pointers, and structs with mutable fields are mutable even when treated as read-only; build them in constructors or return defensive copies. Avoid `init()`; if unavoidable, it must be deterministic, avoid I/O/env/global mutation/goroutines, and not depend on init ordering. Acceptable `init()` uses: registering a value into an in-process registry (codec registration, `database/sql` drivers via blank imports) — the registration itself must not perform I/O or start goroutines. Everything else flows through constructors. See [references/design.md](references/design.md).
 
 2. **Errors: propagate with context, handle once at the boundary.** Interior code wraps and returns: `return fmt.Errorf("operation: %w", err)`. Boundaries log, count, retry, or map errors to user-facing responses. Never log and return the same error. Never swallow errors silently — if intentionally discarding, annotate with `//nolint:errcheck`. `%w` exposes an error contract; `%v` hides implementation details. See [references/errors.md](references/errors.md).
 
@@ -150,7 +153,7 @@ new, existing, generated wrappers, and reviews.
 
 4. **Bounded concurrency.** `errgroup.SetLimit(n)` or `semaphore.Weighted`. Never spawn unbounded goroutines in a loop.
 
-5. **Graceful shutdown is mandatory.** SIGTERM/SIGINT → drain in-flight → close dependencies → exit. Use `oklog/run.Group` for multi-subsystem coordination when subsystems need independent interrupt/cleanup. Use `errgroup` when subsystems share a cancel signal. See [references/server.md](references/server.md).
+5. **Graceful shutdown is mandatory and phased.** SIGTERM/SIGINT triggers a multi-phase sequence: (1) **Drain** — stop accepting new work, wait for in-flight requests; (2) **Hammer** — force-cancel anything still running after a configurable deadline (e.g., 30s); (3) **Terminate** — close dependencies, flush telemetry, exit. Use `oklog/run.Group` for multi-subsystem coordination when subsystems need independent interrupt/cleanup. Use `errgroup` when subsystems share a cancel signal. The hammer phase prevents the real production bug: a graceful period that hangs forever because one connection never drains. See [references/server.md](references/server.md).
 
 6. **Bound every resource explicitly.** Unbounded defaults are production bugs:
    - HTTP servers: `ReadHeaderTimeout`, `ReadTimeout`, `WriteTimeout`, `IdleTimeout`.
@@ -188,7 +191,7 @@ rewrites. Do not churn stable code purely for style compliance.
 
 17. **slog only, no global logger in long-running services.** No `fmt.Println`, no `log.Printf`, no package-level `slog.Info/Error`. Constructors take `*slog.Logger` and bind component attributes once with `logger.With(...)`. Request code uses `InfoContext`, `ErrorContext`, or `logger.LogAttrs(ctx, ...)`. Exception: CLI tools and one-shot commands where injecting a logger through many layers is pure ceremony — `slog.Default()` is acceptable there. See [references/observability.md](references/observability.md).
 
-18. **Zero value must be useful.** Design structs so `var x T` works. `sync.Once` for lazy init. Defaults applied in constructors/methods, not required from callers.
+18. **Zero value must be useful.** Design structs so `var x T` works. `sync.OnceValue` for lazy-initialized package-level values; `sync.Once` for side-effect-only initialization. Defaults applied in constructors/methods, not required from callers.
 
 19. **Generics for type safety, not cleverness.** Good: typed containers, `Set[T]`, `SyncMap[K,V]`, eliminating `any` casts. Bad: one concrete type, premature abstraction. Wait for 3+ implementations.
 
@@ -238,6 +241,7 @@ Read a reference file when the task involves its domain. Skip it for unrelated w
 | [references/errors.md](references/errors.md) | Error types, wrapping, sentinels, custom types, boundary mapping, panic/recover | Designing error contracts, adding error handling, mapping errors at HTTP/gRPC boundaries |
 | [references/design.md](references/design.md) | Packages, DI, interfaces, API design, config structs, builders, generics, defensive copies | Structuring packages, designing constructors or public APIs, choosing between config patterns |
 | [references/server.md](references/server.md) | HTTP+gRPC scaffold, graceful shutdown, middleware, health checks, Connect | Building a new server, adding endpoints, wiring shutdown, or setting up middleware |
+| [references/database.md](references/database.md) | Explicit transactions, Querier interface, cursor iteration, async work (brokers + retry), invariant checks | Writing database access code, managing transactions, processing async work, adding dev-time safety checks |
 | [references/observability.md](references/observability.md) | slog, OpenTelemetry, metrics, tracing, pprof, canonical log lines | Adding logging, metrics, or tracing; diagnosing performance; setting up observability |
 | [references/testing.md](references/testing.md) | goleak, property testing, integration tests, benchmarks, fakes, coverage | Writing tests for concurrent code, setting up integration infra, or benchmarking |
 | [references/linting.md](references/linting.md) | golangci-lint config, linter rationale, CI setup | Configuring linters or adding a new project's CI pipeline |

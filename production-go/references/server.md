@@ -172,7 +172,31 @@ func runServer(cfg *Config, logger *slog.Logger) error {
 }
 ```
 
-Shutdown flow: signal -> HTTP `Shutdown` (drains in-flight) -> worker canceled -> exit 0.
+### Shutdown flow: multi-phase
+
+Signal → **Drain** (HTTP `Shutdown` drains in-flight, workers finish current item) → **Hammer** (force-cancel anything still running after `ShutdownTimeout`) → **Terminate** (close DB, flush telemetry) → exit 0.
+
+The hammer phase prevents the production bug where one hung connection blocks
+shutdown forever. Implement it as a context with a hard deadline:
+
+```go
+// In the interrupt func of the HTTP actor:
+func(error) {
+    // Phase 1: Drain — give in-flight requests time to complete.
+    ctx, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
+    defer cancel()
+    if err := httpSrv.Shutdown(ctx); err != nil {
+        // Phase 2: Hammer — drain timed out, force close.
+        logger.Warn("graceful shutdown timed out, forcing close", "err", err)
+        httpSrv.Close()
+    }
+}
+```
+
+For servers with long-lived connections (WebSocket, SSE, git smart HTTP), the
+hammer phase is essential. Without it, a single idle connection holds the process
+open indefinitely. Configure `ShutdownTimeout` via operational config (default
+30s is reasonable for most services).
 
 ## Service Layer
 

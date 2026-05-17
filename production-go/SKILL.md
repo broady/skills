@@ -1,7 +1,7 @@
 ---
 name: production-go
 description: >
-  Strict production Go standards for generated or reviewed Go code. Trigger for
+  Strict production Go standards for agent-produced or reviewed Go code. Trigger for
   almost all non-trivial Go work: services, libraries, CLIs, concurrency, error
   handling, HTTP/gRPC, DB access, config, linting, and observability. For toy
   examples, apply only the safety rules relevant to the task.
@@ -19,7 +19,7 @@ runtime checks. Bounded everything. Correctness at boundaries.
 
 ## How to use this skill
 
-1. **Classify the task** — review, generate, scaffold, design, add concurrency,
+1. **Classify the task** — review, produce, scaffold, design, add concurrency,
    add DB/async, add observability, configure linting/tests.
 2. **Always enforce safety invariants** (below) — these apply to every task.
 3. **Preserve existing framework choices** unless the task is a new scaffold or
@@ -29,7 +29,7 @@ runtime checks. Bounded everything. Correctness at boundaries.
 
 ## The Five Questions
 
-Before approving any code — generated or human-written — answer these:
+Before approving any code — agent-produced or human-written — answer these:
 
 1. **Who owns this data?** If a function stores a reference, it must own a copy. If it returns internal state, it returns a copy. If data crosses a system boundary, validate it.
 2. **Who handles this error?** The boundary handles it (logs, maps to status). Interior code wraps and returns. Never both. Never swallowed.
@@ -40,7 +40,8 @@ Before approving any code — generated or human-written — answer these:
 ## Safety Invariants
 
 These prevent production incidents. Apply unconditionally to all hand-written
-code. Generated files are exempt; do not modify them.
+and agent-produced code. Tool-generated files (protobuf stubs, sqlc output,
+`go generate` artifacts) are exempt; do not modify them.
 
 1. **No mutable globals, avoid `init()`.** Package-level `var` only for sentinels, compile-time checks, and immutable-by-construction values. Everything else flows through constructors. See [references/design.md](references/design.md).
 2. **Errors: propagate with context, handle once at the boundary.** Use `%w` only when exposing the cause is stable contract; otherwise `%v` or map to domain error. Never log and return. See [references/errors.md](references/errors.md).
@@ -67,7 +68,7 @@ Structure findings as:
 - **Nice to have** — style, naming, documentation
 - **Verify** — tests/commands the author should run
 
-### When generating code
+### When producing code
 
 State clearly:
 

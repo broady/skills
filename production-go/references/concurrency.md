@@ -11,7 +11,7 @@ Core thesis: most channel-based patterns are worse than the mutex or errgroup eq
 2. [Bounded Concurrency](#2-bounded-concurrency) — SetLimit, semaphore, worker pools
 3. [Channels vs Sync Primitives](#3-channels-vs-sync-primitives) — mutex, atomic, Locked[T], when channels are correct
 4. [Common Patterns Done Right](#4-common-patterns-done-right) — fan-out/fan-in, background workers, rate limiting, timeouts, cancellation causes
-5. [Closure Capture Pitfalls](#5-closure-capture-pitfalls) — pointer capture, method values, concurrent handlers
+5. [Closure Capture Pitfalls](#5-closure-capture-pitfalls) — pointer capture, method values, concurrent handlers, named returns, slice headers
 6. [Anti-Patterns to Never Generate](#6-anti-patterns-to-never-generate) — fire-and-forget, naked go, busy spin
 7. [Leak Detection with goleak](#7-leak-detection-with-goleak) — TestMain, per-test, synctest, production detection
 
@@ -648,6 +648,71 @@ func NewMiddleware(next http.Handler, rateLimit bool) http.Handler {
     })
 }
 ```
+
+### Named return variables — compiler-generated writes
+
+Named return variables are scoped to the entire function body. A `return 20`
+statement *writes* to the named variable — the compiler generates an assignment
+invisible in source. A goroutine that captures the named return races with that
+write even though no explicit assignment appears at the `return` site.
+
+```go
+// WRONG — compiler writes to 'result' on return; goroutine reads it
+func compute(ctx context.Context) (result int, err error) {
+    go func() {
+        log.Println(result) // races with the implicit write below
+    }()
+    return 20, nil // compiler generates: result = 20; err = nil; return
+}
+
+// RIGHT — use a local variable; return it explicitly
+func compute(ctx context.Context) (int, error) {
+    r := 20
+    go func() {
+        log.Println(r) // safe: r is never reassigned after goroutine launch
+    }()
+    return r, nil
+}
+```
+
+**Rule**: never launch a goroutine that reads a named return variable.
+If you need named returns (for deferred error annotation), do not share
+those names with concurrent closures.
+
+### Slice internals are value types
+
+A slice header is three words (pointer, length, capacity) copied by value at
+every assignment, argument pass, and closure capture. Locking an `append` does
+not protect a concurrent reader that copied the header *outside* the lock.
+
+```go
+var mu sync.Mutex
+var results []Result
+
+// Writer (locked)
+mu.Lock()
+results = append(results, r) // may reallocate — updates ptr, len, cap
+mu.Unlock()
+
+// WRONG — copies slice header without lock, races on len/cap fields
+go func() {
+    process(results) // header copied here, outside any lock
+}()
+
+// RIGHT — copy under lock, or read after all writes complete
+mu.Lock()
+snapshot := make([]Result, len(results))
+copy(snapshot, results)
+mu.Unlock()
+go func() {
+    process(snapshot)
+}()
+```
+
+The race detector *will* fire on the meta-field read, but the bug is
+non-obvious because the programmer thinks "I only locked the append."
+The same applies to passing a shared slice to `errgroup.Go` — always
+snapshot or wait for `g.Wait()` before reading.
 
 ### Detection and limits
 

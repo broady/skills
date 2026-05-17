@@ -40,13 +40,13 @@ type ServeCmd struct{}
 type Config struct {
 	HTTPAddr    string
 	GRPCAddr    string
-	DatabaseURL string
+	DatabaseURL Secret
 	DBMaxConns  int32
 	LogLevel    slog.Level
 }
 
 func (c Config) Validate() error {
-	if c.DatabaseURL == "" {
+	if c.DatabaseURL.Value() == "" {
 		return fmt.Errorf("database url required")
 	}
 	if c.DBMaxConns <= 0 {
@@ -90,6 +90,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -146,10 +147,14 @@ func loadConfig(configPath, logLevelOverride string) (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
+	var dbURL Secret
+	if err := envSecret("DATABASE_URL", &dbURL); err != nil {
+		return nil, err
+	}
 	cfg := &Config{
 		HTTPAddr:    envString("HTTP_ADDR", ":8080"),
 		GRPCAddr:    envString("GRPC_ADDR", ":8081"),
-		DatabaseURL: envString("DATABASE_URL", ""),
+		DatabaseURL: dbURL,
 		DBMaxConns:  dbMaxConns,
 		LogLevel:    logLevel,
 	}
@@ -188,6 +193,35 @@ func envInt32(name string, fallback int32) (int32, error) {
 		return 0, fmt.Errorf("parse %s: %w", name, err)
 	}
 	return int32(parsed), nil
+}
+
+// Secret prevents credentials from appearing in logs or debug output.
+// See references/config.md for the full pattern including MarshalText.
+type Secret struct{ value string }
+
+func (s Secret) Value() string  { return s.value }
+func (s Secret) String() string { if s.value == "" { return "" }; return "<redacted>" }
+
+// envSecret loads a secret from NAME (direct value) or NAME_FILE (path to
+// file). If both are set, it returns an error — ambiguous precedence is a bug.
+func envSecret(name string, dst *Secret) error {
+	val, hasVal := os.LookupEnv(name)
+	path, hasFile := os.LookupEnv(name + "_FILE")
+	if hasVal && hasFile {
+		return fmt.Errorf("%s and %s_FILE are mutually exclusive", name, name)
+	}
+	if hasFile {
+		b, err := os.ReadFile(path)
+		if err != nil {
+			return fmt.Errorf("read %s_FILE: %w", name, err)
+		}
+		dst.value = strings.TrimRight(string(b), "\r\n")
+		return nil
+	}
+	if hasVal {
+		dst.value = val
+	}
+	return nil
 }
 
 func runServer(cfg *Config, logger *slog.Logger) error {
@@ -264,9 +298,9 @@ func runServer(cfg *Config, logger *slog.Logger) error {
 }
 
 func connectDB(ctx context.Context, cfg *Config) (*sql.DB, error) {
-	db, err := sql.Open("pgx", cfg.DatabaseURL)
+	db, err := sql.Open("pgx", cfg.DatabaseURL.Value())
 	if err != nil {
-		return nil, fmt.Errorf("open db: %v", err)
+		return nil, fmt.Errorf("open db: %w", err)
 	}
 	db.SetMaxOpenConns(int(cfg.DBMaxConns))
 	// Engineering decisions: correct for our protocol and workload.
@@ -275,7 +309,7 @@ func connectDB(ctx context.Context, cfg *Config) (*sql.DB, error) {
 	db.SetConnMaxIdleTime(5 * time.Minute)
 	if err := db.PingContext(ctx); err != nil {
 		_ = db.Close() // best effort after failed startup ping
-		return nil, fmt.Errorf("ping db: %v", err)
+		return nil, fmt.Errorf("ping db: %w", err)
 	}
 	return db, nil
 }

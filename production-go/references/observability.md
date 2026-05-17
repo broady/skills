@@ -476,6 +476,34 @@ func addDebugServer(g *run.Group, logger *slog.Logger, addr string, shutdownTime
 }
 ```
 
+### pprof goroutine labels
+
+Label long-lived goroutines with `runtime/pprof.Labels` so goroutine dumps are
+actionable in production. When a goroutine dump shows 500 goroutines, labels tell
+you which component owns each one without reading stack frames.
+
+```go
+import "runtime/pprof"
+
+func (w *Worker) run(ctx context.Context) {
+    ctx = pprof.WithLabels(ctx, pprof.Labels(
+        "component", "webhook_sender",
+        "queue", w.queueName,
+    ))
+    pprof.SetGoroutineLabels(ctx)
+    // ... worker loop
+}
+```
+
+Use labels for:
+- Background workers and queue processors
+- Per-subsystem goroutines in multi-subsystem servers
+- Goroutines that survive longer than a single request
+
+Labels appear in `go tool pprof` goroutine profiles and can be filtered with
+`-tagfocus`. They also integrate with continuous profiling tools (Pyroscope, Parca)
+for per-component flame graphs.
+
 ### runtime/metrics for GC and goroutines
 
 ```go

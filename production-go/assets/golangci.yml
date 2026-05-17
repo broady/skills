@@ -46,6 +46,9 @@ linters:
     # --- Security ---
     - gosec           # common security issues
 
+    # --- Architectural boundaries ---
+    - depguard        # enforce import deny-lists and layer separation
+
     # --- Banned patterns ---
     - forbidigo       # ban fmt.Print*, log.Print*, etc.
 
@@ -106,6 +109,19 @@ linters:
       # Only enforce in non-test files. Tests may use fmt.Print for debugging.
       exclude-godoc-examples: true
       analyze-types: true
+
+    depguard:
+      rules:
+        main:
+          deny:
+            # Force use of project JSON wrapper for consistent behavior.
+            # Remove this if your project doesn't wrap encoding/json.
+            # - pkg: encoding/json
+            #   desc: use internal/json wrapper for consistent serialization
+            - pkg: io/ioutil
+              desc: deprecated since Go 1.16; use os or io instead
+            - pkg: github.com/pkg/errors
+              desc: use stdlib errors + fmt.Errorf with %w
 
     gci:
       sections:

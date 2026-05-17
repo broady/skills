@@ -16,6 +16,7 @@ coverage.
 7. [Race Detection](#7-race-detection) — CI rule, flaky tests under -race
 8. [Test Helpers and Fakes](#8-test-helpers-and-fakes) — fakes over mocks, t.Helper, t.Cleanup, t.Context
 9. [Coverage Pragmatics](#9-coverage-pragmatics) — floor/ceiling, branch vs line, error paths
+10. [Dev-Only Runtime Invariant Checks](#10-dev-only-runtime-invariant-checks) — runtime safety checks, environment-gated panics
 
 ---
 
@@ -437,3 +438,19 @@ In tests: `clock: func() time.Time { return fixedTime }` for determinism.
 - **Error paths are where bugs hide**. Prioritize error returns, edge cases, and
   recovery logic over sunny-day paths.
 - `go test -coverprofile=c.out ./... && go tool cover -func=c.out` to find gaps.
+
+---
+
+## 10. Dev-Only Runtime Invariant Checks
+
+For subtle correctness bugs that static analysis can't catch (session reuse in
+iterators, ordering violations, data corruption from wrong ID types), add runtime
+invariant checks that run only in dev/test mode.
+
+See [database.md](database.md#dev-only-invariant-checks) for the full pattern and
+examples. The key properties:
+
+- Gated behind `!setting.IsProd` or a build tag — zero cost in production.
+- Panic with a descriptive message — these are programmer errors.
+- Help catch bugs that would otherwise surface as silent data corruption.
+- Remove once the invariant can be enforced at compile time.

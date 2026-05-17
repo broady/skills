@@ -300,6 +300,59 @@ if errors.As(err, &ve) {
 Domain code never imports `net/http` or `google.golang.org/grpc/status`.
 Map domain errors to transport codes at the boundary.
 
+### Transport-agnostic error map
+
+Define a reusable error map that translates domain sentinels to transport status
+codes. This decouples the mapping logic from any specific handler and ensures
+consistency across all endpoints:
+
+```go
+// errkind maps domain error sentinels to transport-level status info.
+type errMapping struct {
+    sentinel error
+    httpCode int
+    grpcCode codes.Code
+    message  string // user-facing; never expose internal details
+}
+
+var errorMap = []errMapping{
+    {domain.ErrNotFound, http.StatusNotFound, codes.NotFound, "not found"},
+    {domain.ErrValidation, http.StatusBadRequest, codes.InvalidArgument, ""},    // message from error
+    {domain.ErrConflict, http.StatusConflict, codes.AlreadyExists, "resource already exists"},
+    {domain.ErrPermission, http.StatusForbidden, codes.PermissionDenied, "permission denied"},
+}
+
+func mapErrorHTTP(err error) (int, string) {
+    for _, m := range errorMap {
+        if errors.Is(err, m.sentinel) {
+            msg := m.message
+            if msg == "" {
+                msg = err.Error()
+            }
+            return m.httpCode, msg
+        }
+    }
+    return http.StatusInternalServerError, "internal error"
+}
+
+func mapErrorGRPC(err error) (codes.Code, string) {
+    for _, m := range errorMap {
+        if errors.Is(err, m.sentinel) {
+            msg := m.message
+            if msg == "" {
+                msg = err.Error()
+            }
+            return m.grpcCode, msg
+        }
+    }
+    return codes.Internal, "internal error"
+}
+```
+
+This pattern scales: adding a new domain error is one line in the table. Both
+HTTP and gRPC boundaries stay consistent automatically. Unknown errors always
+map to 500/Internal and get logged — the caller never sees implementation details.
+
 ### HTTP handler pattern
 
 ```go

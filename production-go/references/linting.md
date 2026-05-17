@@ -63,6 +63,49 @@ These surface easy wins that agents often miss.
 |---|---|
 | `gosec` | Detects hardcoded credentials, weak crypto, SQL injection via string concatenation, unsafe use of `unsafe`, uncontrolled file paths, and other common vulnerabilities. |
 
+### Architectural
+
+| Linter | Why |
+|---|---|
+| `depguard` | Enforces import deny-lists and layer boundaries at lint time. Prevents architectural violations before code review. See [Architectural Boundaries](#architectural-boundaries-depguard). |
+
+### Architectural Boundaries (depguard)
+
+Use `depguard` to enforce import restrictions at the linter level. This prevents
+architectural violations from even compiling in CI — no code review needed for
+the obvious cases.
+
+| Use case | Configuration |
+|---|---|
+| Force wrapper usage | Deny `encoding/json`, require internal `mypkg/json` |
+| Ban deprecated packages | Deny `io/ioutil`, `golang.org/x/exp` |
+| Layer separation | Deny `models` in `migrations/` — migrations must not import live model code |
+| Ban unstable deps | Deny `github.com/pkg/errors` — use stdlib `errors` + `fmt.Errorf` |
+
+```yaml
+linters-settings:
+  depguard:
+    rules:
+      main:
+        deny:
+          - pkg: encoding/json
+            desc: use internal/json wrapper for consistent serialization
+          - pkg: io/ioutil
+            desc: use os or io instead (deprecated since Go 1.16)
+          - pkg: github.com/pkg/errors
+            desc: use stdlib errors + fmt.Errorf
+      migrations:
+        files:
+          - '**/migrations/**/*.go'
+        deny:
+          - pkg: myapp/models$
+            desc: migrations must not depend on live models (they change over time)
+```
+
+`depguard` catches violations at lint time, before code review. It is the
+cheapest way to enforce "always use our wrapper" and "never import across this
+boundary." Add it to every project alongside `forbidigo`.
+
 ### Banned Patterns
 
 Use `forbidigo` or `revive` rules to enforce these bans in non-test code:

@@ -27,6 +27,10 @@ linters:
     - exhaustive      # exhaustive switch on enum types
     - forcetypeassert # single-value type assertions can panic
 
+    # --- Correctness (plugin) ---
+    # nilaway requires a custom golangci-lint build. See references/linting.md.
+    # Enable it via .custom-gcl.yml + the settings.custom block below.
+
     # --- Style ---
     - gofumpt         # stricter gofmt
     - revive          # configurable linter (replaces golint)

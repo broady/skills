@@ -33,6 +33,7 @@ These catch real bugs. All are non-negotiable.
 | `nilerr` | Detects `return nil` inside an `if err != nil` block. Almost always a copy-paste bug. |
 | `exhaustive` | Requires switch statements on enum-like types to cover every case. Prevents silent logic gaps when new values are added. |
 | `forcetypeassert` | Flags single-value type assertions that can panic. Use comma-ok assertions. |
+| `nilaway` | Inference-based nil-panic detection. Tracks nil flows across packages and through interfaces — catches conditional assignments dereferenced outside their guard and nil returns immediately dereferenced at call sites. Requires custom golangci-lint build (see [NilAway setup](#nilaway)). |
 
 ### Style
 
@@ -103,6 +104,73 @@ linters-settings:
 
 See [observability.md](observability.md#prefer-logattrs-everywhere) for the
 rationale behind `attr-only` and the typed attr constructor pattern.
+
+### NilAway
+
+Uber's inference-based nil-panic detector. Unlike `govet`'s `nilness` analyzer,
+NilAway tracks nil flows across package boundaries, through interfaces, and into
+conditional branches. It requires no annotations — it reads standard Go code.
+
+**What it catches that `nilness` misses:**
+
+```go
+// nilness: no error. NilAway: "result may be nil"
+func getUser(id string) *User {
+    if id == "" {
+        return nil
+    }
+    return &User{ID: id}
+}
+
+func handler(id string) {
+    u := getUser(id)
+    fmt.Println(u.Name) // potential nil panic — NilAway flags this
+}
+```
+
+**Setup** — NilAway is not bundled in golangci-lint; it requires the module
+plugin system (golangci-lint v2+).
+
+1. Create `.custom-gcl.yml` at the project root:
+
+```yaml
+version: v2.1.6
+plugins:
+  - module: go.uber.org/nilaway/cmd/gclplugin
+    import: go.uber.org/nilaway/cmd/gclplugin
+    version: # pin to latest release tag
+```
+
+2. Enable in `.golangci.yml`:
+
+```yaml
+linters:
+  enable:
+    - nilaway
+
+  settings:
+    custom:
+      nilaway:
+        type: module
+        settings:
+          include-pkgs: "github.com/yourorg/yourrepo"  # first-party only
+```
+
+3. Build and run the custom binary:
+
+```sh
+golangci-lint custom         # builds ./custom-gcl
+./custom-gcl run ./...       # run as usual
+```
+
+**`include-pkgs` is strongly recommended** — without it NilAway analyzes
+dependencies, which is slow and noisy. Scope it to your module path.
+
+**Status**: actively developed at Uber, production-tested internally. False
+positives are possible; suppress with `//nolint:nilaway` and a justifying
+comment. Do not disable the linter wholesale because of occasional noise.
+
+---
 
 ## Linters to Disable
 

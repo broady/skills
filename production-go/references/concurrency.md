@@ -132,6 +132,7 @@ small `Group` interface is satisfied by `*errgroup.Group`.
 
 ```go
 g, ctx := errgroup.WithContext(ctx)
+g.SetLimit(10)
 safe.Go(g, "flush metrics", func() error {
 	return flusher.Run(ctx)
 })
@@ -139,6 +140,10 @@ if err := g.Wait(); err != nil {
 	return fmt.Errorf("run workers: %w", err)
 }
 ```
+
+Always pair `errgroup` with `SetLimit` — unbounded concurrency requires a
+justifying comment explaining why the number of goroutines is naturally bounded
+(e.g., fixed number of shards).
 
 Do not use this wrapper to make panics acceptable. Use it to ensure panics are
 observable, cancel sibling work, and fail the owner.

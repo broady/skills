@@ -207,7 +207,9 @@ Build tags work for the canonical `integration` gate, but additional categories
 (snapshot, slow, external) are better served by custom flags. Flags are typed,
 self-documenting via `-h`, and discoverable without grepping source.
 
-Register flags in `init()` to keep declaration next to the tests that use it:
+In `*_test.go`, custom test flags are a narrow exception to the production
+"no mutable globals, avoid `init()`" rule. Register flags in `init()` to keep
+declaration next to the tests that use it:
 
 ```go
 package render_test
@@ -217,7 +219,7 @@ import (
     "testing"
 )
 
-var snapshot bool
+var snapshot bool // test flag state; allowed only in _test.go
 
 func init() {
     flag.BoolVar(&snapshot, "custom.snapshot", false, "run snapshot tests")
@@ -240,9 +242,11 @@ from built-in test flags. Discover all registered flags with:
 go test -v -args -h   # lists custom flags alongside built-ins
 ```
 
-Prefer `init()` over parsing in `TestMain` — packages that already use `TestMain`
-for goleak or container setup don't need to coordinate `flag.Parse()` calls
-(`go test` parses flags before `TestMain` runs).
+Prefer `init()` over parsing in `TestMain` for flag registration only —
+packages that already use `TestMain` for goleak or container setup don't need
+to coordinate `flag.Parse()` calls (`go test` parses flags before `TestMain`
+runs). Do not use this exception for production initialization, hidden
+dependencies, or test state that can be local to a test.
 
 ### testcontainers-go
 

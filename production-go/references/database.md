@@ -22,19 +22,19 @@ service locator").
 func (s *OrderService) PlaceOrder(ctx context.Context, req PlaceOrderReq) (*Order, error) {
     tx, err := s.db.BeginTx(ctx, nil)
     if err != nil {
-        return nil, fmt.Errorf("begin tx: %w", err)
+        return nil, fmt.Errorf("begin tx: %v", err)
     }
     defer tx.Rollback() //nolint:errcheck // no-op after commit
 
     order, err := s.store.InsertOrder(ctx, tx, req)
     if err != nil {
-        return nil, fmt.Errorf("insert order: %w", err)
+        return nil, fmt.Errorf("insert order: %v", err)
     }
     if err := s.store.DeductInventory(ctx, tx, order.Items); err != nil {
-        return nil, fmt.Errorf("deduct inventory: %w", err)
+        return nil, fmt.Errorf("deduct inventory: %v", err)
     }
     if err := tx.Commit(); err != nil {
-        return nil, fmt.Errorf("commit: %w", err)
+        return nil, fmt.Errorf("commit: %v", err)
     }
     return order, nil
 }
@@ -75,14 +75,17 @@ A convenience wrapper that handles begin/commit/rollback in one place:
 func WithTx(ctx context.Context, db *sql.DB, fn func(tx *sql.Tx) error) error {
     tx, err := db.BeginTx(ctx, nil)
     if err != nil {
-        return fmt.Errorf("begin tx: %w", err)
+        return fmt.Errorf("begin tx: %v", err)
     }
     defer tx.Rollback() //nolint:errcheck // no-op after commit
 
     if err := fn(tx); err != nil {
         return err
     }
-    return tx.Commit()
+    if err := tx.Commit(); err != nil {
+        return fmt.Errorf("commit tx: %v", err)
+    }
+    return nil
 }
 
 // Generic variant for returning a value.
@@ -107,11 +110,11 @@ func (s *OrderService) PlaceOrder(ctx context.Context, req PlaceOrderReq) (*Orde
     return WithTxResult(ctx, s.db, func(tx *sql.Tx) (*Order, error) {
         order, err := s.orderStore.Insert(ctx, tx, req)
         if err != nil {
-            return nil, fmt.Errorf("insert order: %w", err)
+            return nil, fmt.Errorf("insert order: %v", err)
         }
         // Another store, same transaction — explicit.
         if err := s.inventoryStore.Deduct(ctx, tx, order.Items); err != nil {
-            return nil, fmt.Errorf("deduct inventory: %w", err)
+            return nil, fmt.Errorf("deduct inventory: %v", err)
         }
         return order, nil
     })
@@ -223,9 +226,9 @@ func (c *Consumer[T]) Run(ctx context.Context) error {
             return fmt.Errorf("receive: %w", err)
         }
         if err := c.process(ctx, msg); err != nil {
-            c.logger.ErrorContext(ctx, "processing failed",
-                "msg_id", msg.ID(),
-                "err", err,
+            c.logger.LogAttrs(ctx, slog.LevelError, "processing failed",
+                slog.String("msg_id", msg.ID()),
+                slog.Any("err", err),
             )
             msg.Nack() // broker will redeliver after visibility timeout
             continue
@@ -238,7 +241,8 @@ func (c *Consumer[T]) Run(ctx context.Context) error {
 ### Retry with backoff
 
 For transient failures (downstream timeout, temporary unavailability), retry
-with exponential backoff and jitter. Bound both attempts and total duration:
+with exponential backoff and jitter. Bound attempts, and require callers to pass
+a deadline-bearing context when total duration matters:
 
 ```go
 func retry(ctx context.Context, maxAttempts int, base time.Duration, fn func(ctx context.Context) error) error {

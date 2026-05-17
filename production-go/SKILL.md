@@ -158,7 +158,7 @@ generated code, and reviews. Generated files are exempt; do not modify them.
 
 2. **Errors: propagate with context, handle once at the boundary.** Interior code adds operation context and returns. Use `%w` only when exposing the cause is an intentional, stable contract; otherwise use `%v` or map to a domain error at the package boundary. Boundaries log, count, retry, or map errors to user-facing responses. Never log and return the same error. Never swallow errors silently — if intentionally discarding, annotate with `//nolint:errcheck`. See [references/errors.md](references/errors.md).
 
-3. **No naked goroutines.** Every goroutine is started by `errgroup`, `run.Group`, `safe.Go`, `safe.Collect`, or an explicit owner that can cancel it and wait for it. Looping or blocking goroutines select on `ctx.Done()`. Raw `go` statements require a documented owner, stop path, wait path, and reason. See [references/concurrency.md](references/concurrency.md).
+3. **No naked goroutines.** A goroutine's maximum lifetime must be bounded by the scope that owns and waits for it. Start goroutines via `errgroup`, `run.Group`, `safe.Go`, `safe.Collect`, or an explicit owner that can cancel and wait. Looping or blocking goroutines select on `ctx.Done()`. Raw `go` requires documented owner, stop path, wait path, and reason. See [references/concurrency.md](references/concurrency.md).
 
 4. **Bounded concurrency.** `errgroup.SetLimit(n)` or `semaphore.Weighted`. Never spawn unbounded goroutines in a loop.
 

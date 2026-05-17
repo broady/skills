@@ -235,6 +235,9 @@ shouldn't be its own log line. Two complementary patterns solve this:
 
 **Pattern 1: Context-collected fields.** Lower layers contribute attributes to a
 shared collector on context. Middleware emits one structured line at the end.
+This is not dependency injection through context. Context-carried log fields are
+allowed only for request-scoped diagnostic metadata. Do not use context to pass
+services, clients, loggers, configs, or repositories.
 
 ```go
 // Package reqlog provides per-request log field collection.
@@ -499,7 +502,7 @@ func addDebugServer(g *run.Group, logger *slog.Logger, cfg DebugServerConfig) {
                     "graceful shutdown timed out, forcing close",
                     slog.Any("err", err),
                 )
-                _ = srv.Close()
+                _ = srv.Close() // best effort after graceful shutdown timeout
             }
         },
     )

@@ -82,7 +82,7 @@ g.Add(
                 "graceful shutdown timed out, forcing close",
                 slog.Any("err", err),
             )
-            _ = httpSrv.Close()
+            _ = httpSrv.Close() // best effort after graceful shutdown timeout
         }
     },
 )
@@ -377,7 +377,7 @@ a public `syncs.MutexValue[T]` with the same API shape.
 | Use case | Pattern |
 |---|---|
 | Signaling (done, shutdown) | `chan struct{}` — unbuffered |
-| One-shot async result | `chan T` — buffered 1 |
+| One-shot callback/channel adapter | Prefer synchronous code; if async is unavoidable, use `chan T` buffered 1 only with documented owner, stop path, wait path, and context-aware producer |
 | Pipeline stage | Bounded channel, requires justifying comment |
 
 ```go
@@ -399,26 +399,33 @@ if err := g.Wait(); err != nil {
 	return fmt.Errorf("run task: %w", err)
 }
 
-// One-shot result — buffered 1 so sender never blocks if receiver is gone
+// One-shot adapter — prefer synchronous code. Use this only when adapting an
+// API that is inherently async/callback/channel based. compute must honor ctx;
+// otherwise cancellation cannot stop the goroutine predictably.
 type computeResult struct {
 	Value Result
 	Err   error
 }
-ch := make(chan computeResult, 1)
-
-// Raw go is acceptable here because ownership is explicit:
-// the goroutine has one non-blocking send, the receiver waits below, and ctx
-// bounds how long the caller waits.
-go func() {
+ch := make(chan computeResult, 1) // one-shot handoff; lifecycle is owned by errgroup
+g, ctx := errgroup.WithContext(ctx)
+// Naturally bounded: exactly one supervised goroutine.
+g.Go(func() error {
 	result, err := compute(ctx)
 	ch <- computeResult{Value: result, Err: err}
-}()
+	return nil
+})
 
 var result computeResult
 select {
 case result = <-ch:
 case <-ctx.Done():
+	if err := g.Wait(); err != nil {
+		return Result{}, fmt.Errorf("wait compute: %w", err)
+	}
 	return Result{}, ctx.Err()
+}
+if err := g.Wait(); err != nil {
+	return Result{}, fmt.Errorf("wait compute: %w", err)
 }
 if result.Err != nil {
 	return Result{}, fmt.Errorf("compute: %w", result.Err)
@@ -431,7 +438,7 @@ if result.Err != nil {
 
 ```go
 make(chan Event)          // fine: synchronous handoff
-make(chan Result, 1)      // fine: one-shot future
+make(chan Result, 1)      // one-shot handoff only with owner/stop/wait documented
 make(chan LogEntry, 4096) // REQUIRES justifying comment
 ```
 
@@ -869,7 +876,7 @@ profile is complementary for production observability.
 | Need read-heavy locking? | `sync.RWMutex` (only after profiling) |
 | Need a counter/flag? | `go.uber.org/atomic` |
 | Need to signal done? | `context.CancelFunc` or `close(chan struct{})` |
-| Need one async result? | `chan T` (buffered 1) |
+| Need one async result? | Prefer synchronous code; if adapting an async API, use `chan T` buffered 1 only with owner/stop/wait and context-aware producer documented, otherwise `errgroup`/`safe.Go` |
 | Need a pipeline? | Bounded channel + worker goroutines via errgroup |
 | Need multiple subsystems? | `oklog/run.Group` |
 | Need periodic background work? | `time.Ticker` + `select` on `ctx.Done()` |

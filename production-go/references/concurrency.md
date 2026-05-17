@@ -17,6 +17,30 @@ Core thesis: most channel-based patterns are worse than the mutex or errgroup eq
 
 ---
 
+## Structured concurrency model
+
+Treat every goroutine as a child task with an owner. A child task must not outlive
+the scope that owns and waits for it. This preserves local reasoning: when a
+function returns, its work is done, including any concurrent work it started.
+
+In Go, `errgroup`, `run.Group`, `safe.Go`, and `safe.Collect` are the approved
+nursery-like mechanisms. They provide the structural guarantee: a parent can
+start child work, cancel it, observe its errors, and wait for it.
+
+A raw `go` statement is an escape hatch, not a default. It is allowed only when
+the surrounding code documents:
+- owner
+- stop path
+- wait path
+- reason this cannot use an approved lifecycle primitive
+
+If a helper function starts work into a caller-owned lifecycle, make that visible
+at the call site by accepting the lifecycle explicitly, for example an
+`*errgroup.Group`, a supervisor interface, or by exposing `Run(ctx) error`.
+Hidden background work breaks the function abstraction.
+
+---
+
 ## 1. Goroutine Lifecycle Management
 
 Every goroutine must be traceable to a lifecycle manager that (a) waits for it
@@ -788,6 +812,11 @@ include `case <-ctx.Done()`. No exceptions.
 
 Use `go.uber.org/goleak` to catch goroutine leaks in tests. Put this in
 every package that starts goroutines.
+
+Leak detection works because structured concurrency makes the expected set of
+goroutines knowable. If every goroutine is owned, cancelable, and waited, then
+an orphaned goroutine is a bug unless it is a documented library runtime
+goroutine and explicitly filtered.
 
 ### TestMain — package-wide leak detection
 

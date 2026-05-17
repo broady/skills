@@ -146,6 +146,7 @@ Load a reference file only when the task involves its domain. Skip unrelated one
 |---|---|---|
 | [references/concurrency.md](references/concurrency.md) | Structured concurrency model, goroutine lifecycle, workers, sync vs channels, closure pitfalls | Spawning goroutines, channels, workers, shared state |
 | [references/errors.md](references/errors.md) | Error types, wrapping, sentinels, boundary mapping, panic/recover | Error contracts, error handling, boundary mapping |
+| [references/config.md](references/config.md) | Typed config struct, explicit loader, source precedence, secrets, Secret type, validation, YAML/TOML + env overlay, deviation table (env tags, koanf, Kong) | Config loading, config structure, secrets handling, adding config values |
 | [references/design.md](references/design.md) | Packages, DI, interfaces, API design, config structs, builders, generics, defensive copies | Package structure, constructors, public APIs, config patterns |
 | [references/testing.md](references/testing.md) | goleak, property testing, integration tests, benchmarks, fakes | Writing tests for concurrent code, integration infra, benchmarks |
 | [references/linting.md](references/linting.md) | golangci-lint config, linter rationale, CI setup | Configuring linters, CI pipeline |
@@ -170,6 +171,12 @@ Load a reference file only when the task involves its domain. Skip unrelated one
 | [references/database/cursor-iteration.md](references/database/cursor-iteration.md) | Keyset pagination, batched processing of large result sets | Iterating over large tables or implementing paginated queries |
 | [references/database/async-brokers.md](references/database/async-brokers.md) | External broker consumers, retry with backoff, at-least-once delivery, in-process queues | Implementing async processing, background jobs, or message handling |
 | [references/database/invariant-checks.md](references/database/invariant-checks.md) | Runtime safety checks gated by environment, dev-only panics | Adding debug assertions or catching programmer errors during development |
+
+### Resilience & Flow Control
+
+| File | Covers | Load when... |
+|---|---|---|
+| [references/resilience.md](references/resilience.md) | Circuit breaker, retry with budget, load shedding, hedged requests, bulkheading, backpressure, timeouts as a system, failsafe-go composition | Making outbound service calls, adding retry/timeout logic, handling overload, protecting against cascading failures |
 
 ### Observability
 

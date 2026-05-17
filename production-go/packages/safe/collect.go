@@ -17,6 +17,8 @@ type Result[R any] struct {
 // reported as *PanicError in the corresponding Result.Err.
 //
 // If limit <= 0, Collect panics. Callers must provide an explicit bound.
+// Validate config-derived limits before calling Collect; this panic is for
+// programmer misuse, not ordinary production runtime failure.
 // When ctx is cancelled, in-flight goroutines run to completion but new items
 // are not started; their Result.Err is set to ctx.Err().
 //

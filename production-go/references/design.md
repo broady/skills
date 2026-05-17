@@ -159,12 +159,9 @@ Expose `WithX` / `XFromContext` accessor functions, not the key itself.
 This centralizes the type assertion, prevents misuse, and follows the
 stdlib pattern (`net/http/httptrace`, `runtime/pprof`, OpenTelemetry).
 
-For exported keys (rare — prefer accessors), use a pointer to a named struct:
-
-```go
-type contextKey struct{ name string }
-var UserIDKey = &contextKey{"user-id"} // pointer identity, no allocation
-```
+Do not export context keys. Export accessor functions instead. Package-level
+pointer keys create an avoidable exception to the global-pointer rule and make
+it easier for callers to bypass type-safe accessors.
 
 Provide no-op defaults for optional dependencies. Loggers are not optional
 inside production components: accept `*slog.Logger` in the constructor and bind
@@ -239,7 +236,10 @@ var _ http.Handler = (*Server)(nil)
 var _ io.ReadCloser = (*FileBuffer)(nil)
 ```
 
-Do not define interfaces preemptively. Wait until you have a second consumer that needs a different implementation. (Google Go Style Guide: "Do not define interfaces before they are used.")
+Do not define interfaces preemptively. Define an interface only when the
+consumer needs a seam: a test double, a second implementation, or a plugin
+boundary. Do not define provider-side interfaces before a consumer needs them.
+(Google Go Style Guide: "Do not define interfaces before they are used.")
 
 Never use a pointer to an interface:
 
@@ -447,12 +447,15 @@ pipe, err := NewPipeline().From("input.csv").To("output.parquet").Build()
 
 ### Functional options are discouraged for service config
 
-Prefer config structs over functional options in this project. Closure-style
-`WithX` options are especially discouraged. Uber-style value options may still
-be acceptable for existing APIs, ecosystem-compatible APIs, or public APIs with
-many optional arguments, but require explicit justification. This intentionally
+For production services, prefer explicit config structs because they are
+inspectable, serializable, and validate cleanly. For reusable public Go
+libraries, Uber-style functional options are acceptable, especially when the API
+has many optional parameters and does not model loaded runtime config.
+Closure-style `WithX` options are especially discouraged. This intentionally
 diverges from Uber's public-API guidance: for production services, inspectable
-config usually matters more than call-site fluency. Risks:
+config usually matters more than call-site fluency.
+
+Risks:
 
 - **Mutual exclusion is runtime-only**: callers can pass `WithHTTP(...)` and
   `WithGRPC(...)` unless the API adds validation. A single interface field makes

@@ -8,8 +8,12 @@ import "sync"
 // atomic).
 //
 // Use Do for compound mutations where the new value depends on the current
-// value. Use Get for read-only snapshots. Use Store for wholesale replacement
-// that doesn't depend on the current value.
+// value. Use Get for scalar, deep-value, or immutable values. Use Store for
+// wholesale replacement that doesn't depend on the current value.
+//
+// Locked does not deep-copy T. For maps, slices, pointers, or structs
+// containing them, callers must provide their own copy discipline before
+// storing or after loading to avoid sharing mutable internals.
 type Locked[T any] struct {
 	mu sync.RWMutex
 	v  T
@@ -32,10 +36,10 @@ func (l *Locked[T]) Do(f func(*T)) {
 	f(&l.v)
 }
 
-// Get returns a snapshot of the value under a read lock. Safe for reads that
-// don't feed back into writes. If the value contains pointers, maps, or
-// slices, the caller receives shared references — copy them if mutation is
-// intended.
+// Get returns a shallow copy of the value under a read lock. Safe for reads
+// that don't feed back into writes. If the value contains pointers, maps,
+// slices, or structs containing them, the caller receives shared references and
+// must copy before mutation or exposure across an ownership boundary.
 func (l *Locked[T]) Get() T {
 	l.mu.RLock()
 	defer l.mu.RUnlock()

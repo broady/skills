@@ -40,6 +40,9 @@ type Config struct {
 	HTTPAddr              string
 	GRPCAddr              string
 	DatabaseURL           string
+	DBMaxConns            int32
+	DBMaxConnLifetime     time.Duration
+	DBMaxConnIdleTime     time.Duration
 	LogLevel              slog.Level
 	ShutdownTimeout       time.Duration
 	HTTPReadHeaderTimeout time.Duration
@@ -47,6 +50,22 @@ type Config struct {
 	HTTPWriteTimeout      time.Duration
 	HTTPIdleTimeout       time.Duration
 	HTTPMaxBodyBytes      int64
+}
+
+func (c Config) Validate() error {
+	if c.DatabaseURL == "" {
+		return fmt.Errorf("database url required")
+	}
+	if c.DBMaxConns <= 0 {
+		return fmt.Errorf("db max conns must be positive")
+	}
+	if c.DBMaxConnLifetime <= 0 {
+		return fmt.Errorf("db max conn lifetime must be positive")
+	}
+	if c.DBMaxConnIdleTime <= 0 {
+		return fmt.Errorf("db max conn idle time must be positive")
+	}
+	return nil
 }
 
 type App struct {
@@ -75,6 +94,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -84,10 +104,12 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 
 	"github.com/alecthomas/kong"
+	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/oklog/run"
 )
 
@@ -107,6 +129,9 @@ func runCLI() error {
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
 	}
+	if err := cfg.Validate(); err != nil {
+		return fmt.Errorf("validate config: %w", err)
+	}
 	logger := newLogger(cfg)
 
 	if err := ctx.Run(&App{
@@ -118,11 +143,137 @@ func runCLI() error {
 	return nil
 }
 
+func loadConfig(configPath, logLevelOverride string) (*Config, error) {
+	if configPath != "" {
+		return nil, fmt.Errorf("config file loading not wired: %s", configPath)
+	}
+	logLevel, err := parseLogLevel(envString("LOG_LEVEL", "info"))
+	if err != nil {
+		return nil, fmt.Errorf("parse log level: %w", err)
+	}
+	if logLevelOverride != "" {
+		logLevel, err = parseLogLevel(logLevelOverride)
+		if err != nil {
+			return nil, fmt.Errorf("parse log level override: %w", err)
+		}
+	}
+	dbMaxConns, err := envInt32("DB_MAX_CONNS", 20)
+	if err != nil {
+		return nil, err
+	}
+	dbMaxConnLifetime, err := envDuration("DB_MAX_CONN_LIFETIME", 30*time.Minute)
+	if err != nil {
+		return nil, err
+	}
+	dbMaxConnIdleTime, err := envDuration("DB_MAX_CONN_IDLE_TIME", 5*time.Minute)
+	if err != nil {
+		return nil, err
+	}
+	shutdownTimeout, err := envDuration("SHUTDOWN_TIMEOUT", 30*time.Second)
+	if err != nil {
+		return nil, err
+	}
+	httpReadHeaderTimeout, err := envDuration("HTTP_READ_HEADER_TIMEOUT", 5*time.Second)
+	if err != nil {
+		return nil, err
+	}
+	httpReadTimeout, err := envDuration("HTTP_READ_TIMEOUT", 15*time.Second)
+	if err != nil {
+		return nil, err
+	}
+	httpWriteTimeout, err := envDuration("HTTP_WRITE_TIMEOUT", 30*time.Second)
+	if err != nil {
+		return nil, err
+	}
+	httpIdleTimeout, err := envDuration("HTTP_IDLE_TIMEOUT", 2*time.Minute)
+	if err != nil {
+		return nil, err
+	}
+	httpMaxBodyBytes, err := envInt64("HTTP_MAX_BODY_BYTES", 1<<20)
+	if err != nil {
+		return nil, err
+	}
+	cfg := &Config{
+		HTTPAddr:              envString("HTTP_ADDR", ":8080"),
+		GRPCAddr:              envString("GRPC_ADDR", ":8081"),
+		DatabaseURL:           envString("DATABASE_URL", ""),
+		DBMaxConns:            dbMaxConns,
+		DBMaxConnLifetime:     dbMaxConnLifetime,
+		DBMaxConnIdleTime:     dbMaxConnIdleTime,
+		LogLevel:              logLevel,
+		ShutdownTimeout:       shutdownTimeout,
+		HTTPReadHeaderTimeout: httpReadHeaderTimeout,
+		HTTPReadTimeout:       httpReadTimeout,
+		HTTPWriteTimeout:      httpWriteTimeout,
+		HTTPIdleTimeout:       httpIdleTimeout,
+		HTTPMaxBodyBytes:      httpMaxBodyBytes,
+	}
+	return cfg, nil
+}
+
+func newLogger(cfg *Config) *slog.Logger {
+	return slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
+		Level: cfg.LogLevel,
+	}))
+}
+
+func parseLogLevel(value string) (slog.Level, error) {
+	var level slog.Level
+	if err := level.UnmarshalText([]byte(value)); err != nil {
+		return 0, fmt.Errorf("invalid slog level %q: %w", value, err)
+	}
+	return level, nil
+}
+
+func envString(name, fallback string) string {
+	value, ok := os.LookupEnv(name)
+	if !ok {
+		return fallback
+	}
+	return value
+}
+
+func envInt64(name string, fallback int64) (int64, error) {
+	value, ok := os.LookupEnv(name)
+	if !ok {
+		return fallback, nil
+	}
+	parsed, err := strconv.ParseInt(value, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("parse %s: %w", name, err)
+	}
+	return parsed, nil
+}
+
+func envInt32(name string, fallback int32) (int32, error) {
+	value, ok := os.LookupEnv(name)
+	if !ok {
+		return fallback, nil
+	}
+	parsed, err := strconv.ParseInt(value, 10, 32)
+	if err != nil {
+		return 0, fmt.Errorf("parse %s: %w", name, err)
+	}
+	return int32(parsed), nil
+}
+
+func envDuration(name string, fallback time.Duration) (time.Duration, error) {
+	value, ok := os.LookupEnv(name)
+	if !ok {
+		return fallback, nil
+	}
+	parsed, err := time.ParseDuration(value)
+	if err != nil {
+		return 0, fmt.Errorf("parse %s: %w", name, err)
+	}
+	return parsed, nil
+}
+
 func runServer(cfg *Config, logger *slog.Logger) error {
 	logger = logger.With("component", "server")
 
 	// --- Dependency wiring (this IS the dependency graph) ---
-	db, err := connectDB(cfg.DatabaseURL)
+	db, err := connectDB(context.Background(), cfg)
 	if err != nil {
 		return fmt.Errorf("connect database: %w", err)
 	}
@@ -186,6 +337,21 @@ func runServer(cfg *Config, logger *slog.Logger) error {
 	}
 	logger.LogAttrs(context.Background(), slog.LevelInfo, "shutdown complete")
 	return nil
+}
+
+func connectDB(ctx context.Context, cfg *Config) (*sql.DB, error) {
+	db, err := sql.Open("pgx", cfg.DatabaseURL)
+	if err != nil {
+		return nil, fmt.Errorf("open db: %v", err)
+	}
+	db.SetMaxOpenConns(int(cfg.DBMaxConns))
+	db.SetConnMaxLifetime(cfg.DBMaxConnLifetime)
+	db.SetConnMaxIdleTime(cfg.DBMaxConnIdleTime)
+	if err := db.PingContext(ctx); err != nil {
+		_ = db.Close() // best effort after failed startup ping
+		return nil, fmt.Errorf("ping db: %v", err)
+	}
+	return db, nil
 }
 ```
 
@@ -261,7 +427,10 @@ type OrderService struct {
 func (s *OrderService) Get(ctx context.Context, id string) (*Order, error) {
 	order, err := s.store.FindOrder(ctx, id)
 	if err != nil {
-		return nil, fmt.Errorf("find order: %w", err)
+		if errors.Is(err, ErrNotFound) {
+			return nil, ErrNotFound
+		}
+		return nil, fmt.Errorf("find order: %v", err)
 	}
 	if order == nil {
 		return nil, ErrNotFound
@@ -273,7 +442,7 @@ func (s *OrderService) Get(ctx context.Context, id string) (*Order, error) {
 func (s *OrderService) Create(ctx context.Context, in CreateOrderRequest) (*Order, error) {
 	order, err := s.store.InsertOrder(ctx, in.UserID, in.Items)
 	if err != nil {
-		return nil, fmt.Errorf("insert order: %w", err)
+		return nil, fmt.Errorf("insert order: %v", err)
 	}
 	return order, nil
 }

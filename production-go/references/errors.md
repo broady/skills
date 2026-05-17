@@ -2,7 +2,7 @@
 
 ## Contents
 
-- [The One Rule: Handle Once](#the-one-rule-handle-once) — wrap and return interior, log at boundary
+- [The One Rule: Handle Once](#the-one-rule-handle-once) — add context and return interior, log at boundary
 - [Return Signature Design](#return-signature-design-one-source-of-truth) — error as single source of truth, no redundant bools
 - [Wrapping Strategy](#wrapping-strategy) — %w vs %v, terse prefixes, double-wrap avoidance
 - [Structured Domain Errors](#structured-domain-errors) — Kind, Op, Resource pattern
@@ -35,17 +35,19 @@ func (s *OrderService) Create(ctx context.Context, o *Order) error {
     return nil
 }
 
-// GOOD -- wrap and return; let the boundary handle it
+// GOOD -- add operation context and return; let the boundary handle it
 func (s *OrderService) Create(ctx context.Context, o *Order) error {
     if err := s.store.Insert(ctx, o); err != nil {
-        return fmt.Errorf("insert order: %w", err)
+        return fmt.Errorf("insert order: %v", err) // hide store details at service boundary
     }
     return nil
 }
 ```
 
 The boundary (HTTP handler, gRPC interceptor, CLI main) is where errors get
-logged and mapped to user-facing responses. Everywhere else, wrap and return.
+logged and mapped to user-facing responses. Everywhere else, add operation
+context and return; use `%w` only when exposing the cause is an intentional
+contract.
 
 Never ignore errors silently. If you intentionally discard one, annotate it:
 

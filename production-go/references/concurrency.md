@@ -167,6 +167,10 @@ use `safe.Collect`. It dispatches work to bounded goroutines and returns
 per-item results. Panics are recovered and reported as `*PanicError` — the
 caller sees them, not the process.
 
+`safe.Collect` panics when `limit <= 0`; that is programmer misuse, not a
+production runtime failure path. Validate config-derived limits before calling
+it.
+
 ```go
 type fetchResult struct {
     URL string
@@ -333,8 +337,12 @@ state.Set(s) // lost if another goroutine mutated between Get and Set
 
 Use `safe.Locked[T]` (see [packages/safe/locked.go](../packages/safe/locked.go)):
 - `Do(func(*T))` — write lock held for the entire closure (atomic read-modify-write)
-- `Get() T` — read lock, returns a snapshot
+- `Get() T` — read lock, returns a shallow copy
 - `Store(v T)` — write lock, wholesale replacement
+
+`Locked[T]` is safe for scalar, deep-value, or immutable `T`. It does not
+deep-copy values. For maps, slices, pointers, or structs containing them,
+callers must provide their own copy discipline before storing or after loading.
 
 Usage:
 
@@ -367,7 +375,7 @@ a public `syncs.MutexValue[T]` with the same API shape.
 | Situation | Use |
 |---|---|
 | Simple counter/flag, single writer | `go.uber.org/atomic` |
-| Read current value (no write-back) | `Get()` / snapshot |
+| Read current value (no write-back) | `Get()` for scalar/deep-value/immutable values |
 | Replace value (independent of old) | `Store(v)` |
 | Read-modify-write, conditional update | `Do(func(*T))` |
 | Multiple fields with invariants | `Do(func(*T))` |

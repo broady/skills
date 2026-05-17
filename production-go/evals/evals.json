@@ -1,0 +1,64 @@
+{
+  "skill_name": "production-go",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "Review this Go code for production readiness:\n\n```go\npackage worker\n\nimport (\n\t\"fmt\"\n\t\"log\"\n\t\"net/http\"\n)\n\nvar client = http.DefaultClient\n\nfunc ProcessItems(items []string) {\n\tfor _, item := range items {\n\t\tgo func() {\n\t\t\tresp, err := client.Get(fmt.Sprintf(\"https://api.example.com/process/%s\", item))\n\t\t\tif err != nil {\n\t\t\t\tlog.Printf(\"failed to process %s: %v\", item, err)\n\t\t\t\treturn\n\t\t\t}\n\t\t\tdefer resp.Body.Close()\n\t\t\tlog.Printf(\"processed %s: status %d\", item, resp.StatusCode)\n\t\t}()\n\t}\n}\n```",
+      "expected_output": "Should identify: naked goroutines (no owner, no wait), unbounded concurrency (goroutine per item), http.DefaultClient usage, closure variable capture bug (item not passed), mutable global (client), log.Printf instead of injected slog, no context propagation, no error return from ProcessItems. Must-fix category.",
+      "assertions": [
+        {"type": "contains", "value": "goroutine", "description": "Identifies naked goroutine problem"},
+        {"type": "contains", "value": "unbounded", "description": "Flags unbounded concurrency"},
+        {"type": "contains", "value": "DefaultClient", "description": "Catches http.DefaultClient usage"},
+        {"type": "contains", "value": "closure", "description": "Identifies loop variable capture bug"},
+        {"type": "contains", "value": "Must fix", "description": "Uses output contract format"}
+      ]
+    },
+    {
+      "id": 2,
+      "prompt": "Generate an HTTP handler in Go that accepts a JSON body with fields `account_id` (string) and `amount_cents` (int64), validates both are present, calls a service method, and returns the result as JSON. Follow production Go patterns.",
+      "expected_output": "Should produce: strong domain types (AccountID), a request struct with Validate() method, use the generic handle[] adapter pattern with decodeJSON (including body size limit), domain error mapping at the boundary, injected slog logger, no http.DefaultClient, no globals. Should state which safety invariants are satisfied.",
+      "assertions": [
+        {"type": "contains", "value": "Validate", "description": "Includes validation method"},
+        {"type": "contains", "value": "MaxBytesReader", "description": "Bounds request body size"},
+        {"type": "contains", "value": "slog", "description": "Uses slog, not log package"},
+        {"type": "regex", "value": "type\\s+\\w+ID\\s+string", "description": "Uses strong domain ID type"},
+        {"type": "not_contains", "value": "http.DefaultClient", "description": "Does not use DefaultClient"}
+      ]
+    },
+    {
+      "id": 3,
+      "prompt": "Scaffold a new Go HTTP service called 'notification-service' that connects to PostgreSQL and serves a REST API. Include the full main.go with graceful shutdown.",
+      "expected_output": "Should produce: Kong CLI, loadConfig from env, Config struct with Validate(), explicit DB pool limits, oklog/run.Group with HTTP actor + signal handler, multi-phase shutdown (Drain/Hammer/Terminate), all HTTP server timeouts explicit, slog.Logger injected, no globals, no init(). Should include file tree and config knobs.",
+      "assertions": [
+        {"type": "contains", "value": "run.Group", "description": "Uses run group for lifecycle"},
+        {"type": "contains", "value": "Shutdown", "description": "Implements graceful shutdown"},
+        {"type": "contains", "value": "ShutdownTimeout", "description": "Configurable shutdown timeout"},
+        {"type": "contains", "value": "SetMaxOpenConns", "description": "Bounds DB pool"},
+        {"type": "contains", "value": "ReadHeaderTimeout", "description": "Explicit HTTP timeouts"},
+        {"type": "not_contains", "value": "init()", "description": "No init functions"}
+      ]
+    },
+    {
+      "id": 4,
+      "prompt": "Write a Go function that executes two database operations atomically: insert an order and update the user's order count. Use the transaction patterns from this codebase.",
+      "expected_output": "Should produce: WithTx helper or explicit tx passing, Querier interface satisfied by both *sql.DB and *sql.Tx, context passed through, errors wrapped with operation context, no nested Begin() calls, transaction boundary owned by the service layer.",
+      "assertions": [
+        {"type": "contains", "value": "Tx", "description": "Uses explicit transaction"},
+        {"type": "contains", "value": "Querier", "description": "Uses Querier interface"},
+        {"type": "contains", "value": "Rollback", "description": "Handles rollback"},
+        {"type": "contains", "value": "ctx", "description": "Passes context through"}
+      ]
+    },
+    {
+      "id": 5,
+      "prompt": "Review this logging code for production Go issues:\n\n```go\nfunc (s *PaymentService) Charge(ctx context.Context, req ChargeRequest) (*Receipt, error) {\n\ts.logger.Info(\"charging\", \"card\", req.CardNumber, \"amount\", req.AmountCents, \"user\", req.UserID)\n\treceipt, err := s.gateway.Charge(ctx, req)\n\tif err != nil {\n\t\ts.logger.Error(\"charge failed\", \"err\", err, \"card\", req.CardNumber)\n\t\treturn nil, fmt.Errorf(\"charge: %w\", err)\n\t}\n\ts.logger.Info(\"charge succeeded\", \"receipt_id\", receipt.ID)\n\treturn receipt, nil\n}\n```",
+      "expected_output": "Should identify: PII in logs (card number), log-and-return violation (logs error then returns it), untyped key-value pairs (should use LogAttrs with typed slog.Attr), missing redaction function. Must-fix: PII leak and log-and-return. Should-fix: use LogAttrs.",
+      "assertions": [
+        {"type": "contains", "value": "PII", "description": "Identifies PII/sensitive data logging"},
+        {"type": "regex", "value": "log.*(and|then).*return", "description": "Catches log-and-return violation"},
+        {"type": "contains", "value": "LogAttrs", "description": "Recommends LogAttrs"},
+        {"type": "contains", "value": "redact", "description": "Suggests redaction pattern"}
+      ]
+    }
+  ]
+}

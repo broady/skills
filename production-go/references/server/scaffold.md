@@ -2,6 +2,12 @@
 
 CLI setup, configuration loading, and complete main.go with shutdown flow.
 
+## Contents
+
+- [CLI and Configuration](#cli-and-configuration)
+- [Complete main.go](#complete-maingo)
+- [Shutdown flow: multi-phase](#shutdown-flow-multi-phase)
+
 ## CLI and Configuration
 
 Project default: use `github.com/alecthomas/kong` for new CLIs. Kong owns

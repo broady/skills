@@ -14,7 +14,7 @@ Load the sub-file relevant to the current task. Skip the rest.
 
 | Question | Answer |
 |---|---|
-| Which logging library? | `log/slog` -- no alternatives |
+| Which logging library? | `log/slog` for new code. Preserve an existing consistent logger in stable code unless migrating the subsystem |
 | Log format in production? | `slog.NewJSONHandler` to stdout |
 | Log format in development? | `slog.NewTextHandler` to stderr, with source |
 | Where to log errors? | At the boundary only (handler, interceptor) |

@@ -3,6 +3,21 @@
 Project default: stdlib `log/slog`. Preserve an existing consistent logger in
 stable code unless there is a planned migration. One handler per environment.
 
+## Contents
+
+- [Setup in main()](#setup-in-main)
+- [Dependency injection -- no global logger](#dependency-injection----no-global-logger)
+- [Scoped loggers](#scoped-loggers)
+- [Log levels](#log-levels)
+- [Structured logging -- always key-value pairs](#structured-logging----always-key-value-pairs)
+- [Value redaction](#value-redaction)
+- [Prefer LogAttrs everywhere](#prefer-logattrs-everywhere)
+- [Typed attr constructors](#typed-attr-constructors)
+- [Never log and return](#never-log-and-return)
+- [Context-aware logging](#context-aware-logging)
+- [Log cancellation causes at boundaries](#log-cancellation-causes-at-boundaries)
+- [One log line per request -- canonical log lines](#one-log-line-per-request----canonical-log-lines)
+
 ## Setup in main()
 
 ```go

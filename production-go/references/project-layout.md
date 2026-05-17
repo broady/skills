@@ -45,11 +45,12 @@ Taskfile.yml               # build, test, lint, run
 ## Dependency Direction
 
 ```
-cmd/server  ->  service  ->  store  ->  domain
-                   |
-                   v
-              transport (HTTP/gRPC)
+cmd/server
+    |
+    +---> transport (HTTP/gRPC)  ---> service  ---> store  ---> domain
 ```
 
-Inner layers never import outer layers. `domain` has zero imports from other
-internal packages. `transport` knows about `service` but not `store`.
+`cmd/server` wires all components. `transport` imports `service` (calls it).
+`service` imports `store` (calls it). `store` imports `domain` (returns its
+types). Inner layers never import outer layers. `domain` has zero imports from
+other internal packages. `transport` knows about `service` but not `store`.

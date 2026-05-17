@@ -9,7 +9,7 @@ license: Apache-2.0
 compatibility: Requires Go 1.26+, golangci-lint
 metadata:
   author: cbro
-  version: "0.4"
+  version: "0.5"
 ---
 
 # Production Go
@@ -55,6 +55,42 @@ code. Generated files are exempt; do not modify them.
 11. **Copy mutable data at ownership boundaries.** Store a caller-provided slice/map → copy it. Return internal state → return a snapshot. See [references/design.md](references/design.md).
 12. **Context is not a service locator.** First parameter, never stored in a struct. Used for cancellation, deadlines, request-scoped values. Dependencies go through constructors.
 13. **No panic, no recover in application code.** Return errors. `recover` only in goroutine supervisors (`safe.Go`, `safe.Collect`) and package-internal entry points where panic is structured longjmp. See [references/errors.md](references/errors.md).
+
+## Output Contracts
+
+### When reviewing code
+
+Structure findings as:
+
+- **Must fix** — safety invariant violations, production incident risks
+- **Should fix** — Tier 2 defaults violated in new code, unclear ownership
+- **Nice to have** — style, naming, documentation
+- **Verify** — tests/commands the author should run
+
+### When generating code
+
+State clearly:
+
+- Files created or modified
+- Which safety invariants are satisfied and how
+- Tests added (or why not)
+- Commands to validate (`go vet`, `golangci-lint run`, `go test ./...`)
+
+### When scaffolding a new service
+
+Include:
+
+- File tree with one-line purpose per file
+- Config knobs with defaults and env var names
+- Shutdown behavior: what drains, what gets force-killed, what timeout
+- Lint + test + run commands (prefer Taskfile.yml)
+
+### When modifying existing code
+
+Separate changes into:
+
+- **Safety fixes** — applied immediately regardless of style
+- **Style migrations** — only if the task is a planned migration of the subsystem
 
 ## Review Checklist
 
@@ -111,13 +147,37 @@ Load a reference file only when the task involves its domain. Skip unrelated one
 | [references/concurrency.md](references/concurrency.md) | Structured concurrency model, goroutine lifecycle, workers, sync vs channels, closure pitfalls | Spawning goroutines, channels, workers, shared state |
 | [references/errors.md](references/errors.md) | Error types, wrapping, sentinels, boundary mapping, panic/recover | Error contracts, error handling, boundary mapping |
 | [references/design.md](references/design.md) | Packages, DI, interfaces, API design, config structs, builders, generics, defensive copies | Package structure, constructors, public APIs, config patterns |
-| [references/server/](references/server.md) | HTTP+gRPC scaffold, shutdown, handlers, middleware, Connect, health | Building/modifying servers, endpoints, shutdown, middleware |
-| [references/database/](references/database.md) | Transactions, cursor iteration, async brokers, retry, invariant checks | DB access, transactions, async work, pagination |
-| [references/observability/](references/observability.md) | slog, redaction, canonical log lines, OTel, metrics, tracing, pprof | Logging, metrics, tracing, performance diagnostics |
 | [references/testing.md](references/testing.md) | goleak, property testing, integration tests, benchmarks, fakes | Writing tests for concurrent code, integration infra, benchmarks |
 | [references/linting.md](references/linting.md) | golangci-lint config, linter rationale, CI setup | Configuring linters, CI pipeline |
 | [references/performance.md](references/performance.md) | Allocation reduction, profiling, benchmarking | Hot-path optimization, profiling |
 | [references/project-layout.md](references/project-layout.md) | Directory structure, dependency direction | Greenfield service scaffolding |
+
+### Server
+
+| File | Covers | Load when... |
+|---|---|---|
+| [references/server/scaffold.md](references/server/scaffold.md) | Kong CLI, loadConfig, complete main.go, run group, shutdown flow | Starting a new service or wiring the process entry point |
+| [references/server/handlers.md](references/server/handlers.md) | Service layer, generic handler adapter, decoders, error mapping, HTTP server assembly | Adding endpoints, changing request/response handling |
+| [references/server/middleware.md](references/server/middleware.md) | Request ID, logging, auth, no panic recovery | Adding or modifying HTTP middleware |
+| [references/server/connect-grpc.md](references/server/connect-grpc.md) | Connect handlers, interceptors, traditional gRPC fallback | Adding gRPC/Connect services |
+| [references/server/health.md](references/server/health.md) | Liveness vs readiness, ReadinessChecker interface | Adding or debugging health checks |
+
+### Database & Async
+
+| File | Covers | Load when... |
+|---|---|---|
+| [references/database/transactions.md](references/database/transactions.md) | Explicit tx passing, Querier interface, WithTx helper, nested service calls | Writing or reviewing code that uses SQL transactions |
+| [references/database/cursor-iteration.md](references/database/cursor-iteration.md) | Keyset pagination, batched processing of large result sets | Iterating over large tables or implementing paginated queries |
+| [references/database/async-brokers.md](references/database/async-brokers.md) | External broker consumers, retry with backoff, at-least-once delivery, in-process queues | Implementing async processing, background jobs, or message handling |
+| [references/database/invariant-checks.md](references/database/invariant-checks.md) | Runtime safety checks gated by environment, dev-only panics | Adding debug assertions or catching programmer errors during development |
+
+### Observability
+
+| File | Covers | Load when... |
+|---|---|---|
+| [references/observability/logging.md](references/observability/logging.md) | slog setup, injection, scoped loggers, levels, LogAttrs, redaction, canonical log lines | Adding/changing logging, reviewing log hygiene |
+| [references/observability/metrics-tracing.md](references/observability/metrics-tracing.md) | OTel provider setup, HTTP/gRPC middleware spans, manual spans, DB instrumentation, RED/USE metrics | Adding metrics or tracing, instrumenting endpoints |
+| [references/observability/runtime.md](references/observability/runtime.md) | pprof, goroutine labels, runtime/metrics, expvar | Debugging performance, adding profiling, exposing debug state |
 
 ## Packages
 

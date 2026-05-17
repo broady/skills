@@ -1,5 +1,13 @@
 # OpenTelemetry for Metrics and Tracing
 
+## Contents
+
+- [Provider setup in main()](#provider-setup-in-main)
+- [HTTP/gRPC middleware -- automatic spans](#httpgrpc-middleware----automatic-spans)
+- [Manual spans for important operations](#manual-spans-for-important-operations)
+- [Instrumenting a database call](#instrumenting-a-database-call)
+- [Metrics -- RED and USE](#metrics----red-and-use)
+
 > **Note:** OTel is used here for demonstration — it shows the patterns
 > (provider setup, middleware spans, manual instrumentation, RED/USE metrics)
 > in a vendor-neutral way. It is not a blanket recommendation. OTel adds a

@@ -2,6 +2,14 @@
 
 Service layer, handler adapter pattern, and HTTP server assembly.
 
+## Contents
+
+- [Service Layer](#service-layer)
+- [Handler Adapter](#handler-adapter)
+- [Decoders](#decoders)
+- [Error mapping](#error-mapping)
+- [HTTP Server (stdlib net/http)](#http-server-stdlib-nethttp)
+
 ## Service Layer
 
 Service methods have one shape: `func(context.Context, In) (Out, error)`. No
@@ -108,6 +116,13 @@ func handle[In, Out any](
 For custom response encoding (SSE, non-JSON), add an `encode` parameter to
 `handle` for the full three-arg shape. The default adapter assumes JSON
 responses, which covers most endpoints.
+
+**Pointer-receiver caveat:** The `any(in).(Validator)` assertion checks the
+decoded value. If `Validate()` has a pointer receiver (e.g., `func (r
+*CreateOrderRequest) Validate() error`), the assertion only matches when `In`
+is already a pointer type. Use value receivers for request validators, or decode
+into a pointer type (`decodeJSON[*CreateOrderRequest](...)`), to ensure
+validation always fires.
 
 ### Decoders
 

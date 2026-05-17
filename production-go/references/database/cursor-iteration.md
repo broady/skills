@@ -37,17 +37,29 @@ func IterateAll[T Keyed](ctx context.Context, q Querier, batchSize int, fn func(
     }
 }
 
+// fetchBatch is a sketch — replace the query and scan with your actual schema.
+// In practice, use sqlc or a scan helper (e.g., pgx.CollectRows) to avoid
+// hand-written row scanning.
 func fetchBatch[T Keyed](ctx context.Context, q Querier, afterID int64, limit int) ([]T, error) {
     rows, err := q.QueryContext(ctx,
-        `SELECT * FROM table WHERE id > $1 ORDER BY id ASC LIMIT $2`,
+        `SELECT id, name, created_at FROM items WHERE id > $1 ORDER BY id ASC LIMIT $2`,
         afterID, limit,
     )
     if err != nil {
         return nil, err
     }
     defer rows.Close()
-    // scan rows into []T ...
-    return nil, rows.Err()
+
+    var batch []T
+    for rows.Next() {
+        var item T
+        // Replace with your actual Scan implementation.
+        if err := scanRow(rows, &item); err != nil {
+            return nil, err
+        }
+        batch = append(batch, item)
+    }
+    return batch, rows.Err()
 }
 ```
 

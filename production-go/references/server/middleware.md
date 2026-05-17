@@ -4,13 +4,32 @@ HTTP middleware patterns: request ID, logging, auth, and why not to recover pani
 
 ## Request ID
 
+Validate and length-cap inbound `X-Request-ID`. Reflecting arbitrary header
+content without normalization risks log injection and header smuggling.
+
 ```go
 type requestIDKey struct{}
+
+const maxRequestIDLen = 64
+
+// validRequestID returns true if id contains only printable ASCII without
+// control characters or spaces — safe for headers and structured logs.
+func validRequestID(id string) bool {
+	if len(id) == 0 || len(id) > maxRequestIDLen {
+		return false
+	}
+	for _, c := range id {
+		if c < '!' || c > '~' { // printable ASCII, no space
+			return false
+		}
+	}
+	return true
+}
 
 func withRequestID(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		id := r.Header.Get("X-Request-ID")
-		if id == "" {
+		if !validRequestID(id) {
 			id = uuid.NewString()
 		}
 		ctx := context.WithValue(r.Context(), requestIDKey{}, id)
@@ -50,10 +69,11 @@ type statusWriter struct {
 }
 
 func (w *statusWriter) WriteHeader(code int) {
-	if !w.wroteHeader {
-		w.status = code
-		w.wroteHeader = true
+	if w.wroteHeader {
+		return // net/http: superfluous WriteHeader call
 	}
+	w.status = code
+	w.wroteHeader = true
 	w.ResponseWriter.WriteHeader(code)
 }
 ```
@@ -73,12 +93,16 @@ background goroutines that must report panics to their owner.
 
 ## Auth
 
+Parse Authorization as an actual Bearer scheme. `strings.TrimPrefix` alone
+accepts any non-empty string that doesn't start with "Bearer " as a valid
+token, which is incorrect.
+
 ```go
 func withAuth(verifier TokenVerifier, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-		if token == "" {
-			writeJSONError(w, http.StatusUnauthorized, "missing authorization")
+		token, ok := parseBearerToken(r.Header.Get("Authorization"))
+		if !ok {
+			writeJSONError(w, http.StatusUnauthorized, "missing or malformed authorization")
 			return
 		}
 		claims, err := verifier.Verify(r.Context(), token)
@@ -89,5 +113,19 @@ func withAuth(verifier TokenVerifier, next http.Handler) http.Handler {
 		ctx := context.WithValue(r.Context(), claimsKey{}, claims)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
+}
+
+// parseBearerToken extracts the token from a "Bearer <token>" header value.
+// Returns ("", false) if the header is missing, empty, or not Bearer scheme.
+func parseBearerToken(header string) (string, bool) {
+	const prefix = "Bearer "
+	if !strings.HasPrefix(header, prefix) {
+		return "", false
+	}
+	token := header[len(prefix):]
+	if token == "" {
+		return "", false
+	}
+	return token, true
 }
 ```

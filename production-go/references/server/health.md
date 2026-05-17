@@ -13,9 +13,11 @@ func handleHealthz() http.HandlerFunc {
 }
 
 // Readiness: can this instance serve traffic? Failure removes from pool without restart.
-func handleReadyz(deps ...ReadinessChecker) http.HandlerFunc {
+// readinessTimeout should come from configuration (default: 2s is reasonable for
+// most services; tune based on the slowest dependency check).
+func handleReadyz(readinessTimeout time.Duration, deps ...ReadinessChecker) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+		ctx, cancel := context.WithTimeout(r.Context(), readinessTimeout)
 		defer cancel()
 		for _, dep := range deps {
 			if err := dep.Ready(ctx); err != nil {

@@ -13,7 +13,8 @@ Core thesis: most channel-based patterns are worse than the mutex or errgroup eq
 4. [Common Patterns Done Right](#4-common-patterns-done-right) — fan-out/fan-in, background workers, rate limiting, timeouts, cancellation causes
 5. [Closure Capture Pitfalls](#5-closure-capture-pitfalls) — pointer capture, method values, concurrent handlers, named returns, slice headers
 6. [Anti-Patterns to Never Generate](#6-anti-patterns-to-never-generate) — fire-and-forget, naked go, busy spin
-7. [Leak Detection with goleak](#7-leak-detection-with-goleak) — TestMain, per-test, synctest, production detection
+7. [Leak Detection with goleak](#7-leak-detection-with-goleak) — TestMain, per-test, production detection
+8. [Deterministic Time Testing with synctest](#8-deterministic-time-testing-with-synctest) — fake time, ticker/timer tests without real sleeps
 
 ---
 
@@ -329,9 +330,9 @@ func (c *Cache) Get(key string) (*Entry, bool) {
 **sync.RWMutex**: same pattern with `RLock`/`RUnlock` for reads. Use only
 when profiling confirms read contention — do not prematurely optimize.
 
-**atomic**: follow Uber style and use `go.uber.org/atomic` for simple counters
-and flags. It wraps atomic operations in typed APIs so reads and writes are
-harder to misuse.
+**atomic**: use stdlib `sync/atomic` typed wrappers (`atomic.Bool`,
+`atomic.Int64`, etc.) for simple counters and flags. The underlying value is
+unexported, so non-atomic access is impossible at compile time.
 
 ```go
 type HealthCheck struct{ ready atomic.Bool }
@@ -402,7 +403,7 @@ a public `syncs.MutexValue[T]` with the same API shape.
 
 | Situation | Use |
 |---|---|
-| Simple counter/flag, single writer | `go.uber.org/atomic` |
+| Simple counter/flag, single writer | `sync/atomic` typed wrappers |
 | Read current value (no write-back) | `Get()` for scalar/deep-value/immutable values |
 | Replace value (independent of old) | `Store(v)` |
 | Read-modify-write, conditional update | `Do(func(*T))` |
@@ -863,10 +864,18 @@ func TestMain(m *testing.M) {
 }
 ```
 
-### Deterministic time testing with testing/synctest (Go 1.24+)
+### Production leak detection (Go 1.26+, experimental)
 
-Use `synctest.Run` to test ticker/timer code without real sleeps. Fake time
-advances only when all goroutines in the bubble are blocked.
+`/debug/pprof/goroutineleak` uses GC reachability to detect leaked goroutines
+in running services. `goleak` remains the primary tool for tests; the pprof
+profile is complementary for production observability.
+
+---
+
+## 8. Deterministic Time Testing with synctest
+
+Use `synctest.Run` (Go 1.24+) to test ticker/timer code without real sleeps.
+Fake time advances only when all goroutines in the bubble are blocked.
 
 ```go
 func TestFlusherTick(t *testing.T) {
@@ -899,12 +908,6 @@ func TestFlusherTick(t *testing.T) {
 Prefer `synctest` over mocking time interfaces — it works with the real
 `time` package and catches races that interface mocks hide.
 
-### Production leak detection (Go 1.26+, experimental)
-
-`/debug/pprof/goroutineleak` uses GC reachability to detect leaked goroutines
-in running services. `goleak` remains the primary tool for tests; the pprof
-profile is complementary for production observability.
-
 ---
 
 ## Decision Matrix
@@ -915,11 +918,11 @@ profile is complementary for production observability.
 | Need to limit concurrency? | `errgroup.SetLimit` or `semaphore.Weighted` |
 | Need to protect shared state? | `sync.Mutex` |
 | Need read-heavy locking? | `sync.RWMutex` (only after profiling) |
-| Need a counter/flag? | `go.uber.org/atomic` |
+| Need a counter/flag? | `sync/atomic` typed wrappers (`atomic.Bool`, `atomic.Int64`, etc.) |
 | Need to signal done? | `context.CancelFunc` or `close(chan struct{})` |
 | Need one async result? | Prefer synchronous code; if adapting an async API, use `chan T` buffered 1 only with owner/stop/wait and context-aware producer documented, otherwise `errgroup`/`safe.Go` |
 | Need a pipeline? | Bounded channel + worker goroutines via errgroup |
-| Need multiple subsystems? | `oklog/run.Group` |
+| Need multiple subsystems? | `errgroup` (shared cancel) or `oklog/run.Group` (independent interrupt/cleanup) |
 | Need periodic background work? | `time.Ticker` + `select` on `ctx.Done()` |
 | Need contractual rate limiting? | `golang.org/x/time/rate.Limiter` (enforces "N per second" contracts; not a substitute for adaptive load shedding — see [resilience.md](resilience.md)) |
 | Need to detect goroutine leaks? | `go.uber.org/goleak` |

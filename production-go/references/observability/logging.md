@@ -224,7 +224,7 @@ if ctx.Err() != nil {
 }
 ```
 
-See [concurrency.md](concurrency.md#cancellation-causes) for how to attach
+See [concurrency.md](../concurrency.md#cancellation-causes) for how to attach
 causes with `context.WithCancelCause`.
 
 ## One log line per request -- canonical log lines

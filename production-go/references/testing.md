@@ -100,6 +100,10 @@ func TestMain(m *testing.M) {
 }
 ```
 
+For deterministic time testing (`synctest`), per-test leak verification with
+errgroup, and the relationship between goleak and structured concurrency, see
+[concurrency.md](concurrency.md#7-leak-detection-with-goleak).
+
 ---
 
 ## 3. Property-Based Testing
@@ -452,8 +456,8 @@ For subtle correctness bugs that static analysis can't catch (session reuse in
 iterators, ordering violations, data corruption from wrong ID types), add runtime
 invariant checks that run only in dev/test mode.
 
-See [database.md](database.md#dev-only-invariant-checks) for the full pattern and
-examples. The key properties:
+See [database/invariant-checks.md](database/invariant-checks.md) for the full
+pattern and examples. The key properties:
 
 - Gated behind `!setting.IsProd` or a build tag — zero cost in production.
 - Panic with a descriptive message — these are programmer errors.

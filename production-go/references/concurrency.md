@@ -5,6 +5,16 @@ Core thesis: most channel-based patterns are worse than the mutex or errgroup eq
 
 **Philosophy**: bounded everything, every goroutine has an owner, channels are almost always wrong.
 
+## Contents
+
+1. [Goroutine Lifecycle Management](#1-goroutine-lifecycle-management) — errgroup, run.Group, safe.Go, safe.Collect, ctx.Done
+2. [Bounded Concurrency](#2-bounded-concurrency) — SetLimit, semaphore, worker pools
+3. [Channels vs Sync Primitives](#3-channels-vs-sync-primitives) — mutex, atomic, Locked[T], when channels are correct
+4. [Common Patterns Done Right](#4-common-patterns-done-right) — fan-out/fan-in, background workers, rate limiting, timeouts, cancellation causes
+5. [Closure Capture Pitfalls](#5-closure-capture-pitfalls) — pointer capture, method values, concurrent handlers
+6. [Anti-Patterns to Never Generate](#6-anti-patterns-to-never-generate) — fire-and-forget, naked go, busy spin
+7. [Leak Detection with goleak](#7-leak-detection-with-goleak) — TestMain, per-test, synctest, production detection
+
 ---
 
 ## 1. Goroutine Lifecycle Management

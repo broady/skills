@@ -5,6 +5,18 @@ targets, golden files). This file covers assertions, leak detection, property
 testing, integration infrastructure, benchmarking, race detection, fakes, and
 coverage.
 
+## Contents
+
+1. [Assertions](#1-assertions) — assert/v2, go-cmp, error contracts
+2. [Goroutine Leak Detection (goleak)](#2-goroutine-leak-detection-goleak) — TestMain, per-test, filtering
+3. [Property-Based Testing](#3-property-based-testing) — round-trip, idempotency, rapid
+4. [Test Placement](#4-test-placement) — white-box vs black-box, integration test location
+5. [Integration Test Infrastructure](#5-integration-test-infrastructure) — build tags, custom flags, testcontainers, fixtures
+6. [Benchmarking Discipline](#6-benchmarking-discipline) — b.Loop, sink, benchstat
+7. [Race Detection](#7-race-detection) — CI rule, flaky tests under -race
+8. [Test Helpers and Fakes](#8-test-helpers-and-fakes) — fakes over mocks, t.Helper, t.Cleanup, t.Context
+9. [Coverage Pragmatics](#9-coverage-pragmatics) — floor/ceiling, branch vs line, error paths
+
 ---
 
 ## 1. Assertions

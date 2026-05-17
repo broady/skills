@@ -280,10 +280,10 @@ func Transfer(from, to AccountID, amount Cents) error
 
 ### Config structs for optional settings
 
-Prefer config structs over functional options for optional settings. Structs
-are serializable, inspectable in debuggers, easy to validate, and visible in
-tests. They make defaults and cross-field constraints explicit instead of
-hiding configuration in a list of closures.
+Prefer config structs over functional options for optional service settings.
+Structs are serializable, inspectable in debuggers, easy to validate, and
+visible in tests. They make defaults and cross-field constraints explicit.
+Closure-style `WithX` options hide configuration and are especially discouraged.
 
 ```go
 type ClientConfig struct {
@@ -345,10 +345,10 @@ what they care about. The struct literal is self-documenting.
 
 ### Interface fields for mutually exclusive choices
 
-Functional options can't express "at most one of" — they're a flat list. An
-interface field on the config struct enforces mutual exclusion at compile time.
-A nil interface field still compiles, so `Validate()` enforces that one strategy
-is required.
+Functional options do not express "at most one of" as directly as a single
+interface field. An interface field on the config struct enforces mutual
+exclusion at compile time. A nil interface field still compiles, so `Validate()`
+enforces that one strategy is required.
 
 ```go
 // Sealed interface — only this package defines implementations.
@@ -447,20 +447,23 @@ pipe, err := NewPipeline().From("input.csv").To("output.parquet").Build()
 
 ### Functional options are discouraged for service config
 
-Functional options (`WithFoo(...)`) are a flat list of closures. Avoid adding
-them in new code unless you are extending an existing option-based API or
-wrapping an ecosystem API that already uses them. This intentionally diverges
-from Uber's public-API guidance: for production services, inspectable config
-usually matters more than call-site fluency. Problems:
+Prefer config structs over functional options in this project. Closure-style
+`WithX` options are especially discouraged. Uber-style value options may still
+be acceptable for existing APIs, ecosystem-compatible APIs, or public APIs with
+many optional arguments, but require explicit justification. This intentionally
+diverges from Uber's public-API guidance: for production services, inspectable
+config usually matters more than call-site fluency. Risks:
 
-- **No mutual exclusion**: callers can pass `WithHTTP(...)` AND `WithGRPC(...)`
-  — the last one silently wins, or you add runtime validation that the type
-  system should have caught.
-- **No ordering**: can't express "set source before sink."
-- **Not serializable**: can't load from config files, can't round-trip in tests.
-- **Opaque**: a `[]Option` is invisible to debuggers and loggers.
-- **Hard to document as data**: callers can't easily print, diff, validate, or
-  pass the complete configuration around.
+- **Mutual exclusion is runtime-only**: callers can pass `WithHTTP(...)` and
+  `WithGRPC(...)` unless the API adds validation. A single interface field makes
+  "at most one" visible in the type.
+- **Ordering is runtime-only**: options can't express "set source before sink";
+  use a builder when valid next steps matter.
+- **Loaded config is awkward**: options don't map cleanly to env/files/flags or
+  round-trip tests.
+- **Inspectability varies**: Uber-style value options are more debuggable than
+  closures, but a config struct is still easier to print, diff, validate, and
+  pass around as data.
 
 Use config structs for optional and serializable settings. Use interface fields
 for at-most-one choices and `Validate()` when one is required. Use builders when
@@ -491,7 +494,11 @@ Prefer config structs with zero-value defaults instead.
 
 ## 5. Struct Design
 
-Make the zero value useful:
+Prefer useful zero values for value types and optional configuration objects.
+Service types with required dependencies may require constructors; a meaningless
+zero-value service is worse than an explicit `NewService(...)`.
+
+Make value-type zero values useful:
 
 ```go
 // GOOD: zero value is a usable, unbuffered writer

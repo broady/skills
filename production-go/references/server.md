@@ -93,7 +93,8 @@ import (
 
 func main() {
 	if err := runCLI(); err != nil {
-		slog.New(slog.NewJSONHandler(os.Stderr, nil)).Error("exit", "err", err)
+		logger := slog.New(slog.NewJSONHandler(os.Stderr, nil))
+		logger.LogAttrs(context.Background(), slog.LevelError, "exit", slog.Any("err", err))
 		os.Exit(1)
 	}
 }
@@ -156,7 +157,7 @@ func runServer(cfg *Config, logger *slog.Logger) error {
 					"graceful shutdown timed out, forcing close",
 					slog.Any("err", err),
 				)
-				_ = httpSrv.Close()
+				_ = httpSrv.Close() // best effort after graceful shutdown timeout
 			}
 		})
 	}
@@ -203,8 +204,11 @@ func(error) {
     defer cancel()
     if err := httpSrv.Shutdown(ctx); err != nil {
         // Phase 2: Hammer — drain timed out, force close.
-        logger.Warn("graceful shutdown timed out, forcing close", "err", err)
-        httpSrv.Close()
+        logger.LogAttrs(context.Background(), slog.LevelWarn,
+            "graceful shutdown timed out, forcing close",
+            slog.Any("err", err),
+        )
+        _ = httpSrv.Close() // best effort after graceful shutdown timeout
     }
 }
 ```

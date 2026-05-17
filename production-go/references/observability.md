@@ -312,8 +312,25 @@ request/response bodies.
 
 ## 2. OpenTelemetry for Metrics and Tracing
 
-Use `go.opentelemetry.io/otel`. Do NOT use Prometheus client directly --
-OTEL exports to Prometheus, OTLP, and others via exporters.
+> **Note:** OTel is used here for demonstration — it shows the patterns
+> (provider setup, middleware spans, manual instrumentation, RED/USE metrics)
+> in a vendor-neutral way. It is not a blanket recommendation. OTel adds a
+> large dependency tree, non-trivial per-request overhead, and startup cost.
+> Evaluate whether you need it:
+>
+> - **Single service, Prometheus backend** — `prometheus/client_golang`
+>   directly is simpler and lighter.
+> - **Single service, no metrics backend yet** — canonical log lines (§1) +
+>   pprof (§3) cover most debugging needs. Add metrics when you have
+>   somewhere to send them.
+> - **Multiple services, need cross-service tracing** — OTel earns its weight
+>   here via vendor-neutral OTLP export and contrib auto-instrumentation.
+>
+> If you do adopt OTel, prefer metrics-only (`sdkmetric`) until tracing is
+> justified. Tracing doubles the dependency and runtime cost.
+
+When using OTel: export to Prometheus, OTLP, or other backends via exporters
+rather than coupling to a vendor client directly.
 
 ### Provider setup in main()
 
@@ -492,8 +509,8 @@ defer activeConns.Add(-1)
 | Log format in development? | `slog.NewTextHandler` to stderr, with source |
 | Where to log errors? | At the boundary only (handler, interceptor) |
 | Hot-path logging? | `logger.LogAttrs(ctx, ...)` to avoid allocations |
-| Metrics library? | OpenTelemetry SDK, export to Prometheus/OTLP |
-| Tracing library? | OpenTelemetry SDK with OTLP exporter |
+| Metrics library? | OTel SDK if multi-backend/multi-service; `prometheus/client_golang` if Prom-only |
+| Tracing library? | OTel SDK with OTLP exporter -- only when multiple services justify it |
 | What to instrument first? | RED metrics on every endpoint |
 | When to add tracing? | Multiple services needing cross-service debug |
 | pprof in production? | Yes, always -- on a separate internal port |

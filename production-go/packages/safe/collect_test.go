@@ -168,28 +168,13 @@ func TestCollectEmptySlice(t *testing.T) {
 	}
 }
 
-func TestCollectZeroLimitDefaultsToLen(t *testing.T) {
-	const n = 5
-	items := make([]int, n)
-
-	var running atomic.Int32
-	var maxSeen atomic.Int32
-
-	Collect(context.Background(), 0, items, func(_ context.Context, _ int) (struct{}, error) {
-		cur := running.Add(1)
-		for {
-			old := maxSeen.Load()
-			if cur <= old || maxSeen.CompareAndSwap(old, cur) {
-				break
-			}
+func TestCollectPanicsOnZeroLimit(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic for limit <= 0")
 		}
-		time.Sleep(5 * time.Millisecond)
-		running.Add(-1)
-		return struct{}{}, nil
+	}()
+	Collect(context.Background(), 0, []int{1}, func(_ context.Context, n int) (int, error) {
+		return n, nil
 	})
-
-	// With limit=0 (defaults to len=5) and 5ms sleep, all should run at once.
-	if peak := maxSeen.Load(); peak != n {
-		t.Errorf("peak concurrency %d, want %d (all items concurrent)", peak, n)
-	}
 }

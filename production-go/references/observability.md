@@ -12,9 +12,10 @@ pays off with many services. Metrics and logs cover 90% of incident response.
 
 ---
 
-## 1. slog -- The Only Logging Library
+## 1. slog -- Project Default Logging
 
-stdlib `log/slog`. No zerolog, no zap, no logrus. One handler per environment.
+Project default: stdlib `log/slog`. Preserve an existing consistent logger in
+stable code unless there is a planned migration. One handler per environment.
 
 ### Setup in main()
 
@@ -36,7 +37,9 @@ func newLogger(env string) *slog.Logger {
 Pass `*slog.Logger` through constructors. No package-level logger variables.
 No `slog.Default()` outside `main()` or test bootstrap. Library code calling
 `slog.Info(...)`, `slog.Error(...)`, or other package-level logging functions
-uses the default logger as a hidden global.
+uses the default logger as a hidden global. CLI tools write user-facing output
+to an injected `io.Writer`; operational logs still use an injected
+`*slog.Logger`.
 
 ```go
 type OrderService struct {
@@ -64,10 +67,10 @@ func (s *OrderService) Create(ctx context.Context, req CreateOrderReq) (*Order, 
     if err != nil {
         return nil, fmt.Errorf("insert order %s: %w", req.ID, err)
     }
-    s.logger.InfoContext(ctx, "order created",
-        "order_id", req.ID,
-        "user_id", req.UserID,
-        "total", order.Total,
+    s.logger.LogAttrs(ctx, slog.LevelInfo, "order created",
+        slog.String("order_id", req.ID),
+        slog.String("user_id", req.UserID),
+        slog.Int64("total", order.Total),
     )
     return order, nil
 }
@@ -86,10 +89,13 @@ func (s *OrderService) Create(ctx context.Context, req CreateOrderReq) (*Order, 
 
 ```go
 // GOOD
-logger.InfoContext(ctx, "order created", "order_id", id, "total", total)
+logger.LogAttrs(ctx, slog.LevelInfo, "order created",
+    slog.String("order_id", id),
+    slog.Int64("total", total),
+)
 
 // BAD -- string interpolation destroys structure
-logger.InfoContext(ctx, fmt.Sprintf("created order %s with total %d", id, total))
+logger.LogAttrs(ctx, slog.LevelInfo, fmt.Sprintf("created order %s with total %d", id, total))
 ```
 
 Use snake_case keys consistently. Never log passwords, tokens, or PII.
@@ -110,9 +116,9 @@ func LoggableRequest(r *CreateUserRequest) *CreateUserRequest {
 }
 
 // At the boundary:
-logger.InfoContext(ctx, "request received",
-    "req", LoggableRequest(req),
-    "method", r.Method,
+logger.LogAttrs(ctx, slog.LevelInfo, "request received",
+    slog.Any("req", LoggableRequest(req)),
+    slog.String("method", r.Method),
 )
 ```
 
@@ -177,7 +183,7 @@ Pick one. At boundaries (handlers, interceptors), log. Everywhere else, wrap and
 ```go
 // WRONG
 if err != nil {
-    s.logger.ErrorContext(ctx, "query failed", "err", err)
+    s.logger.LogAttrs(ctx, slog.LevelError, "query failed", slog.Any("err", err))
     return fmt.Errorf("query users: %w", err)
 }
 
@@ -189,14 +195,18 @@ if err != nil {
 
 ### Context-aware logging
 
-Use `InfoContext`, `ErrorContext`, etc. for code that runs inside a request.
+Use `LogAttrs` with the request context for code that runs inside a request.
 This lets handlers and slog handlers attach trace IDs, request IDs, auth
 principals, and other request-scoped values without threading them through
 every call site as explicit log fields.
 
 ```go
-s.logger.InfoContext(ctx, "payment processed", "amount", amount)
+s.logger.LogAttrs(ctx, slog.LevelInfo, "payment processed", slog.Int64("amount", amount))
 ```
+
+Startup and shutdown logs that do not have a request context still use
+`LogAttrs`; pass `context.Background()` explicitly so linting and review can
+distinguish lifecycle logs from accidental context-free request logs.
 
 ### Log cancellation causes at boundaries
 
@@ -206,9 +216,9 @@ category) and `context.Cause(ctx)` (the specific reason). Without the cause,
 
 ```go
 if ctx.Err() != nil {
-    logger.ErrorContext(ctx, "request failed",
-        "err", ctx.Err(),            // "context canceled" or "context deadline exceeded"
-        "cause", context.Cause(ctx), // "order ord-123: 5s processing timeout"
+    logger.LogAttrs(ctx, slog.LevelError, "request failed",
+        slog.Any("err", ctx.Err()),            // "context canceled" or "context deadline exceeded"
+        slog.Any("cause", context.Cause(ctx)), // "order ord-123: 5s processing timeout"
     )
 }
 ```
@@ -446,7 +456,16 @@ func metricsMiddleware(dur metric.Float64Histogram, total metric.Int64Counter, n
 ### pprof -- always on, separate internal port
 
 ```go
-func addDebugServer(g *run.Group, logger *slog.Logger, addr string, shutdownTimeout time.Duration) {
+type DebugServerConfig struct {
+    Addr              string
+    ShutdownTimeout   time.Duration
+    ReadHeaderTimeout time.Duration
+    ReadTimeout       time.Duration
+    WriteTimeout      time.Duration
+    IdleTimeout       time.Duration
+}
+
+func addDebugServer(g *run.Group, logger *slog.Logger, cfg DebugServerConfig) {
     mux := http.NewServeMux()
     mux.HandleFunc("GET /debug/pprof/", pprof.Index)
     mux.HandleFunc("GET /debug/pprof/profile", pprof.Profile)
@@ -456,7 +475,14 @@ func addDebugServer(g *run.Group, logger *slog.Logger, addr string, shutdownTime
     mux.Handle("GET /debug/pprof/goroutine", pprof.Handler("goroutine"))
     mux.Handle("GET /debug/vars", expvar.Handler())
 
-    srv := &http.Server{Addr: addr, Handler: mux}
+    srv := &http.Server{
+        Addr:              cfg.Addr,
+        Handler:           mux,
+        ReadHeaderTimeout: cfg.ReadHeaderTimeout,
+        ReadTimeout:       cfg.ReadTimeout,
+        WriteTimeout:      cfg.WriteTimeout,
+        IdleTimeout:       cfg.IdleTimeout,
+    }
     g.Add(
         func() error {
             err := srv.ListenAndServe()
@@ -466,10 +492,14 @@ func addDebugServer(g *run.Group, logger *slog.Logger, addr string, shutdownTime
             return fmt.Errorf("serve debug: %w", err)
         },
         func(error) {
-            ctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+            ctx, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
             defer cancel()
             if err := srv.Shutdown(ctx); err != nil {
-                logger.Error("shutdown debug server", "err", err)
+                logger.LogAttrs(context.Background(), slog.LevelWarn,
+                    "graceful shutdown timed out, forcing close",
+                    slog.Any("err", err),
+                )
+                _ = srv.Close()
             }
         },
     )
@@ -537,8 +567,8 @@ defer activeConns.Add(-1)
 | Log format in development? | `slog.NewTextHandler` to stderr, with source |
 | Where to log errors? | At the boundary only (handler, interceptor) |
 | Hot-path logging? | `logger.LogAttrs(ctx, ...)` to avoid allocations |
-| Metrics library? | OTel SDK if multi-backend/multi-service; `prometheus/client_golang` if Prom-only |
-| Tracing library? | OTel SDK with OTLP exporter -- only when multiple services justify it |
+| Metrics library? | Project default: OpenTelemetry SDK when multi-backend export or org policy justifies it; Prometheus client is fine for single-backend services |
+| Tracing library? | OpenTelemetry SDK with OTLP exporter when tracing has a concrete operational need |
 | What to instrument first? | RED metrics on every endpoint |
 | When to add tracing? | Multiple services needing cross-service debug |
 | pprof in production? | Yes, always -- on a separate internal port |

@@ -61,8 +61,9 @@ Use `errors.As` manually when you need to inspect fields on a custom error type.
 
 ## 2. Goroutine Leak Detection (goleak)
 
-Any package that spawns goroutines MUST use `go.uber.org/goleak`. Leaking
-goroutines cause resource exhaustion, flaky tests, and production OOMs.
+Project default: packages that spawn goroutines use `go.uber.org/goleak` or an
+existing equivalent leak check. Leaking goroutines cause resource exhaustion,
+flaky tests, and production OOMs.
 
 ### Package-wide: TestMain
 
@@ -403,8 +404,10 @@ func setupTestServer(t *testing.T, store OrderStore) *httptest.Server {
 
 ### t.Cleanup over defer
 
-`t.Cleanup` runs even after `t.Fatal`. `defer` does not -- `t.Fatal` calls
-`runtime.Goexit`, skipping defers in subtests. Always use `t.Cleanup` for teardown.
+Prefer `t.Cleanup` for teardown that belongs to the test or subtest lifecycle,
+especially from helpers, because it composes cleanly and runs at the right
+scope. Defers still run after `t.Fatal` in the same goroutine, but they are tied
+to the lexical function, not the test resource lifecycle.
 
 ### t.Context() (Go 1.24+)
 

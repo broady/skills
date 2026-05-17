@@ -29,7 +29,7 @@ the caller.
 // BAD -- handled twice (logged AND returned)
 func (s *OrderService) Create(ctx context.Context, o *Order) error {
     if err := s.store.Insert(ctx, o); err != nil {
-        s.logger.ErrorContext(ctx, "insert order", "err", err) // handle #1
+        s.logger.LogAttrs(ctx, slog.LevelError, "insert order", slog.Any("err", err)) // handle #1
         return fmt.Errorf("insert order: %w", err)       // handle #2
     }
     return nil
@@ -291,7 +291,10 @@ Rules:
 ```go
 var ve *ValidationError
 if errors.As(err, &ve) {
-    logger.WarnContext(ctx, "validation failed", "field", ve.Field, "message", ve.Message)
+    logger.LogAttrs(ctx, slog.LevelWarn, "validation failed",
+        slog.String("field", ve.Field),
+        slog.String("message", ve.Message),
+    )
 }
 ```
 
@@ -382,10 +385,10 @@ func (h *Handler) handleError(w http.ResponseWriter, r *http.Request, err error)
         respondError(w, http.StatusConflict, "resource already exists")
     default:
         // Unknown errors are internal. Log and return 500.
-        h.logger.ErrorContext(r.Context(), "unhandled error",
-            "method", r.Method,
-            "path", r.URL.Path,
-            "err", err,
+        h.logger.LogAttrs(r.Context(), slog.LevelError, "unhandled error",
+            slog.String("method", r.Method),
+            slog.String("path", r.URL.Path),
+            slog.Any("err", err),
         )
         respondError(w, http.StatusInternalServerError, "internal error")
     }
@@ -420,7 +423,10 @@ func domainToGRPC(ctx context.Context, logger *slog.Logger, method string, err e
     case errors.Is(err, domain.ErrConflict):
         return status.Error(codes.AlreadyExists, "resource already exists")
     default:
-        logger.ErrorContext(ctx, "unhandled error", "method", method, "err", err)
+        logger.LogAttrs(ctx, slog.LevelError, "unhandled error",
+            slog.String("method", method),
+            slog.Any("err", err),
+        )
         return status.Error(codes.Internal, "internal error")
     }
 }
@@ -520,7 +526,11 @@ invariant has been violated and the program is in an inconsistent state.
 2. **API misuse that is always a programmer bug** — e.g., a nil argument that
    the contract forbids, called before `Init()`. The stdlib panics in these
    cases (slice out-of-bounds, nil pointer dereference, closed channel send).
-3. **Package-internal control flow** — see below.
+3. **Dev/test-only invariant assertions** — checks that panic to catch
+   programmer misuse are acceptable only when gated out of production by build
+   tags, environment, or validated config. Production runtime failures still
+   return errors.
+4. **Package-internal control flow** — see below.
 
 ### When panic is NOT acceptable
 

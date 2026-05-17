@@ -10,12 +10,13 @@ Complete patterns for HTTP+gRPC servers. Copy, adapt, ship.
 - [Handler Adapter](#handler-adapter) — generic decode/validate/call/encode, decoders, error mapping
 - [HTTP Server (stdlib net/http)](#http-server-stdlib-nethttp) — mux, middleware stack, timeouts
 - [Middleware](#middleware) — request ID, logging, auth, no panic recovery
-- [gRPC with Connect (preferred)](#grpc-with-connect-preferred) — Connect handlers, interceptors, traditional gRPC
+- [gRPC with Connect (project default)](#grpc-with-connect-project-default) — Connect handlers, interceptors, traditional gRPC
 - [Health Checks](#health-checks) — liveness vs readiness, ReadinessChecker interface
 
 ## CLI and Configuration
 
-Use `github.com/alecthomas/kong` for CLIs. Kong owns command and flag parsing.
+Project default: use `github.com/alecthomas/kong` for new CLIs. Kong owns
+command and flag parsing.
 The config package owns env vars, config files, and secrets. Do not use Kong
 `env:"..."` tags for application config values if the config package also reads
 env; two sources claiming `DATABASE_URL` will eventually disagree.
@@ -36,11 +37,16 @@ type CLI struct {
 type ServeCmd struct{}
 
 type Config struct {
-	HTTPAddr        string
-	GRPCAddr        string
-	DatabaseURL     string
-	LogLevel        slog.Level
-	ShutdownTimeout time.Duration
+	HTTPAddr              string
+	GRPCAddr              string
+	DatabaseURL           string
+	LogLevel              slog.Level
+	ShutdownTimeout       time.Duration
+	HTTPReadHeaderTimeout time.Duration
+	HTTPReadTimeout       time.Duration
+	HTTPWriteTimeout      time.Duration
+	HTTPIdleTimeout       time.Duration
+	HTTPMaxBodyBytes      int64
 }
 
 type App struct {
@@ -69,8 +75,10 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -121,7 +129,7 @@ func runServer(cfg *Config, logger *slog.Logger) error {
 
 	userStore := NewUserStore(db)
 	orderSvc := NewOrderService(logger, userStore)
-	httpSrv := buildHTTPServer(logger, orderSvc)
+	httpSrv := buildHTTPServer(cfg, logger, orderSvc)
 
 	// --- Run group ---
 	var g run.Group
@@ -133,7 +141,9 @@ func runServer(cfg *Config, logger *slog.Logger) error {
 			return fmt.Errorf("listen http %s: %w", cfg.HTTPAddr, err)
 		}
 		g.Add(func() error {
-			logger.Info("http server starting", "addr", ln.Addr().String())
+			logger.LogAttrs(context.Background(), slog.LevelInfo, "http server starting",
+				slog.String("addr", ln.Addr().String()),
+			)
 			if err := httpSrv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
 				return fmt.Errorf("serve http: %w", err)
 			}
@@ -142,7 +152,11 @@ func runServer(cfg *Config, logger *slog.Logger) error {
 			ctx, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
 			defer cancel()
 			if err := httpSrv.Shutdown(ctx); err != nil {
-				logger.Error("shutdown http server", "err", err)
+				logger.LogAttrs(context.Background(), slog.LevelWarn,
+					"graceful shutdown timed out, forcing close",
+					slog.Any("err", err),
+				)
+				_ = httpSrv.Close()
 			}
 		})
 	}
@@ -152,7 +166,7 @@ func runServer(cfg *Config, logger *slog.Logger) error {
 		ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 		g.Add(func() error {
 			<-ctx.Done()
-			logger.Info("received shutdown signal")
+			logger.LogAttrs(context.Background(), slog.LevelInfo, "received shutdown signal")
 			return nil
 		}, func(error) {
 			cancel()
@@ -163,11 +177,13 @@ func runServer(cfg *Config, logger *slog.Logger) error {
 	// ctx, cancel := context.WithCancel(context.Background())
 	// g.Add(func() error { return runFlusher(ctx, logger) }, func(error) { cancel() })
 
-	logger.Info("starting", "http", cfg.HTTPAddr)
+	logger.LogAttrs(context.Background(), slog.LevelInfo, "starting",
+		slog.String("http", cfg.HTTPAddr),
+	)
 	if err := g.Run(); err != nil {
 		return fmt.Errorf("run server: %w", err)
 	}
-	logger.Info("shutdown complete")
+	logger.LogAttrs(context.Background(), slog.LevelInfo, "shutdown complete")
 	return nil
 }
 ```
@@ -270,11 +286,11 @@ line (Redowan Delowar).
 // If In implements Validator, validation runs after decode, before the call.
 func handle[In, Out any](
 	logger *slog.Logger,
-	decode func(*http.Request) (In, error),
+	decode func(http.ResponseWriter, *http.Request) (In, error),
 	fn     func(context.Context, In) (Out, error),
 ) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		in, err := decode(r)
+		in, err := decode(w, r)
 		if err != nil {
 			writeError(logger, w, r, err)
 			return
@@ -292,7 +308,7 @@ func handle[In, Out any](
 		}
 		w.Header().Set("Content-Type", "application/json")
 		if err := json.NewEncoder(w).Encode(out); err != nil {
-			logger.ErrorContext(r.Context(), "encode response", "err", err)
+			logger.LogAttrs(r.Context(), slog.LevelError, "encode response", slog.Any("err", err))
 		}
 	})
 }
@@ -308,18 +324,38 @@ Decoders are small functions that extract input from the request. Reuse the
 common ones; write per-endpoint decoders for custom wire shapes.
 
 ```go
-// decodeJSON reads a JSON body into In.
-func decodeJSON[In any](r *http.Request) (In, error) {
-	var in In
-	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
-		return in, fmt.Errorf("%w: invalid request body", ErrValidation)
+// decodeJSON reads a JSON body into In. The caller supplies the route-level
+// request body budget explicitly.
+func decodeJSON[In any](maxBodyBytes int64) func(http.ResponseWriter, *http.Request) (In, error) {
+	return func(w http.ResponseWriter, r *http.Request) (In, error) {
+		var in In
+		r.Body = http.MaxBytesReader(w, r.Body, maxBodyBytes)
+		dec := json.NewDecoder(r.Body)
+		if err := dec.Decode(&in); err != nil {
+			var maxErr *http.MaxBytesError
+			if errors.As(err, &maxErr) {
+				return in, fmt.Errorf("%w: request body too large", ErrValidation)
+			}
+			return in, fmt.Errorf("%w: invalid request body", ErrValidation)
+		}
+		var extra any
+		if err := dec.Decode(&extra); err != io.EOF {
+			var maxErr *http.MaxBytesError
+			if errors.As(err, &maxErr) {
+				return in, fmt.Errorf("%w: request body too large", ErrValidation)
+			}
+			if err != nil {
+				return in, fmt.Errorf("%w: invalid request body", ErrValidation)
+			}
+			return in, fmt.Errorf("%w: multiple JSON values", ErrValidation)
+		}
+		return in, nil
 	}
-	return in, nil
 }
 
 // decodePathID reads a single path parameter.
-func decodePathID(param string) func(*http.Request) (string, error) {
-	return func(r *http.Request) (string, error) {
+func decodePathID(param string) func(http.ResponseWriter, *http.Request) (string, error) {
+	return func(_ http.ResponseWriter, r *http.Request) (string, error) {
 		id := r.PathValue(param)
 		if id == "" {
 			return "", fmt.Errorf("%w: missing %s", ErrValidation, param)
@@ -338,13 +374,27 @@ JSON, missing path param) wrap `ErrValidation` so the same switch handles them.
 func writeError(logger *slog.Logger, w http.ResponseWriter, r *http.Request, err error) {
 	switch {
 	case errors.Is(err, ErrNotFound):
-		http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
+		writeJSONError(w, http.StatusNotFound, "not found")
 	case errors.Is(err, ErrValidation):
-		http.Error(w, fmt.Sprintf(`{"error":%q}`, err.Error()), http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, err.Error())
 	default:
-		logger.ErrorContext(r.Context(), "internal error",
-			"err", err, "method", r.Method, "path", r.URL.Path)
-		http.Error(w, `{"error":"internal server error"}`, http.StatusInternalServerError)
+		logger.LogAttrs(r.Context(), slog.LevelError, "internal error",
+			slog.Any("err", err),
+			slog.String("method", r.Method),
+			slog.String("path", r.URL.Path),
+		)
+		writeJSONError(w, http.StatusInternalServerError, "internal server error")
+	}
+}
+
+func writeJSONError(w http.ResponseWriter, status int, msg string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	if err := json.NewEncoder(w).Encode(struct {
+		Error string `json:"error"`
+	}{Error: msg}); err != nil {
+		// Nothing useful to do after headers are written.
+		return
 	}
 }
 ```
@@ -352,12 +402,16 @@ func writeError(logger *slog.Logger, w http.ResponseWriter, r *http.Request, err
 ## HTTP Server (stdlib net/http)
 
 ```go
-func buildHTTPServer(logger *slog.Logger, orderSvc *OrderService) *http.Server {
+func buildHTTPServer(cfg *Config, logger *slog.Logger, orderSvc *OrderService) *http.Server {
 	mux := http.NewServeMux()
 
 	// Each line: decode → validate → call → JSON encode.
 	mux.Handle("GET /api/orders/{id}", handle(logger, decodePathID("id"), orderSvc.Get))
-	mux.Handle("POST /api/orders", handle(logger, decodeJSON[CreateOrderRequest], orderSvc.Create))
+	mux.Handle("POST /api/orders", handle(
+		logger,
+		decodeJSON[CreateOrderRequest](cfg.HTTPMaxBodyBytes),
+		orderSvc.Create,
+	))
 	mux.HandleFunc("GET /healthz", handleHealthz())
 	mux.HandleFunc("GET /readyz", handleReadyz(orderSvc))
 
@@ -367,8 +421,10 @@ func buildHTTPServer(logger *slog.Logger, orderSvc *OrderService) *http.Server {
 
 	return &http.Server{
 		Handler:           handler,
-		ReadHeaderTimeout: 10 * time.Second,
-		IdleTimeout:       120 * time.Second,
+		ReadHeaderTimeout: cfg.HTTPReadHeaderTimeout,
+		ReadTimeout:       cfg.HTTPReadTimeout,
+		WriteTimeout:      cfg.HTTPWriteTimeout,
+		IdleTimeout:       cfg.HTTPIdleTimeout,
 		MaxHeaderBytes:    1 << 20, // 1 MB
 	}
 }
@@ -437,7 +493,9 @@ func (w *statusWriter) WriteHeader(code int) {
 Handlers return errors and map them at the boundary. Do not add HTTP/gRPC
 middleware that recovers panics. A panic is a bug, not a request-level error
 path. The standard `net/http` server recovers panics from handlers; do not copy
-that behavior into application middleware.
+that behavior into application middleware. Make panics observable through normal
+process supervision, server error logs, and crash reporting; do not translate
+them into ordinary application control flow.
 
 Use the goroutine supervisor pattern in
 [concurrency.md](concurrency.md#panic-supervision-with-safego) for owned
@@ -450,12 +508,12 @@ func withAuth(verifier TokenVerifier, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
 		if token == "" {
-			http.Error(w, `{"error":"missing authorization"}`, http.StatusUnauthorized)
+			writeJSONError(w, http.StatusUnauthorized, "missing authorization")
 			return
 		}
 		claims, err := verifier.Verify(r.Context(), token)
 		if err != nil {
-			http.Error(w, `{"error":"invalid token"}`, http.StatusUnauthorized)
+			writeJSONError(w, http.StatusUnauthorized, "invalid token")
 			return
 		}
 		ctx := context.WithValue(r.Context(), claimsKey{}, claims)
@@ -464,7 +522,7 @@ func withAuth(verifier TokenVerifier, next http.Handler) http.Handler {
 }
 ```
 
-## gRPC with Connect (preferred)
+## gRPC with Connect (project default)
 
 connectrpc.com/connect serves Connect, gRPC, and gRPC-Web on a single HTTP
 port. No separate listener. Works with stdlib `net/http`.
@@ -477,7 +535,7 @@ import (
 	orderv1connect "example.com/gen/order/v1/orderv1connect"
 )
 
-func buildConnectServer(logger *slog.Logger, orderSvc *OrderService) *http.Server {
+func buildConnectServer(cfg *Config, logger *slog.Logger, orderSvc *OrderService) *http.Server {
 	mux := http.NewServeMux()
 
 	orderPath, orderHandler := orderv1connect.NewOrderServiceHandler(
@@ -493,7 +551,13 @@ func buildConnectServer(logger *slog.Logger, orderSvc *OrderService) *http.Serve
 		grpcreflect.NewStaticReflector(orderv1connect.OrderServiceName),
 	))
 
-	return &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second}
+	return &http.Server{
+		Handler:           mux,
+		ReadHeaderTimeout: cfg.HTTPReadHeaderTimeout,
+		ReadTimeout:       cfg.HTTPReadTimeout,
+		WriteTimeout:      cfg.HTTPWriteTimeout,
+		IdleTimeout:       cfg.HTTPIdleTimeout,
+	}
 }
 
 // Connect interceptor
@@ -571,7 +635,7 @@ func handleReadyz(deps ...ReadinessChecker) http.HandlerFunc {
 		defer cancel()
 		for _, dep := range deps {
 			if err := dep.Ready(ctx); err != nil {
-				http.Error(w, fmt.Sprintf("not ready: %v", err), http.StatusServiceUnavailable)
+				writeJSONError(w, http.StatusServiceUnavailable, fmt.Sprintf("not ready: %v", err))
 				return
 			}
 		}

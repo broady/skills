@@ -1,10 +1,11 @@
 # Linting
 
-## The Single Tool: golangci-lint
+## Project Default: golangci-lint
 
-Use `golangci-lint` as the only linting tool. No standalone `go vet` invocations,
-no separate `staticcheck` binary, no ad-hoc shell scripts. One tool, one config,
-one CI step.
+Use `golangci-lint` as the project default linting tool. Avoid adding standalone
+`go vet` invocations, separate `staticcheck` binaries, or ad-hoc shell scripts
+unless an existing codebase already has a consistent equivalent. One tool, one
+config, one CI step.
 
 ```sh
 golangci-lint run ./...
@@ -112,8 +113,8 @@ Use `forbidigo` or `revive` rules to enforce these bans in non-test code:
 
 | Banned | Replacement | Why |
 |---|---|---|
-| `fmt.Print*`, `fmt.Fprint*` | `slog.Info`, `slog.Error` | Unstructured output. Impossible to filter, route, or query in production. |
-| `log.Print*` | `slog.Info`, `slog.Error` | The `log` package has no structured fields and no levels. Use `slog` for production logging. |
+| `fmt.Print*` | `logger.LogAttrs(...)` for operational logs; injected `io.Writer` for CLI user output | Unstructured process output. Impossible to filter, route, or query in production. |
+| `log.Print*` | `logger.LogAttrs(...)` | The `log` package has no structured fields and no levels. Use `slog` for production logging. |
 | `log.Fatal*` outside `main` | Return an error | `log.Fatal` calls `os.Exit`. Only the entrypoint decides to terminate the process. |
 | `os.Exit` outside `main` | Return an error | `os.Exit` bypasses `defer`, skips graceful shutdown, and makes non-entrypoint code untestable. Use the `run() error` pattern. |
 | Dependencies from `context.Context` | Constructor injection | Context carries cancellation, deadlines, and request-scoped metadata. It is not a service locator. Ban project helpers such as `ctxutil.DB(ctx)`, `ctxutil.Store(ctx)`, and `ctxutil.Client(ctx)`. |
@@ -126,8 +127,9 @@ context helper packages and review direct `ctx.Value` usage carefully.
 
 Likewise, no stock linter can perfectly identify "inside a request" for logging.
 Ban package-level slog calls with `forbidigo`; review service/handler code for
-`InfoContext`, `ErrorContext`, and `logger.LogAttrs(ctx, ...)` rather than
-context-free `Info`, `Error`, or per-call `logger.With(...)`.
+`logger.LogAttrs(ctx, ...)` with typed `slog.Attr` values rather than
+context-free `Info`, `Error`, key/value `InfoContext`, or per-call
+`logger.With(...)`.
 
 ### sloglint
 
@@ -214,6 +216,15 @@ positives are possible; suppress with `//nolint:nilaway` and a justifying
 comment. Do not disable the linter wholesale because of occasional noise.
 
 ---
+
+### Optional dependency bans
+
+Use `depguard` for project-specific dependency boundaries, not as a universal
+ban list. For JSON, direct `encoding/json` is acceptable when handlers apply
+explicit request size limits and handle decode/encode errors. If the project has
+a serialization wrapper that centralizes those limits, unknown-field policy,
+redaction, or alternate encoders, then ban direct `encoding/json` imports and
+force callers through the wrapper.
 
 ## Linters to Disable
 

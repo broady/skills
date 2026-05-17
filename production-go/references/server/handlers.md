@@ -219,7 +219,7 @@ func buildHTTPServer(logger *slog.Logger, orderSvc *OrderService) *http.Server {
 		orderSvc.Create,
 	))
 	mux.HandleFunc("GET /healthz", handleHealthz())
-	mux.HandleFunc("GET /readyz", handleReadyz(orderSvc))
+	mux.HandleFunc("GET /readyz", handleReadyz(2*time.Second, orderSvc))
 
 	// Middleware stack: outermost wraps first, runs first.
 	// Do not add panic recovery middleware; handlers return errors.

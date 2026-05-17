@@ -31,12 +31,15 @@ func buildConnectServer(cfg *Config, logger *slog.Logger, orderSvc *OrderService
 		grpcreflect.NewStaticReflector(orderv1connect.OrderServiceName),
 	))
 
+	// Engineering decisions, not config — these are correct for our protocol
+	// and workload. Graduate to config only when they need to vary per
+	// deployment (see references/config.md).
 	return &http.Server{
 		Handler:           mux,
-		ReadHeaderTimeout: cfg.HTTPReadHeaderTimeout,
-		ReadTimeout:       cfg.HTTPReadTimeout,
-		WriteTimeout:      cfg.HTTPWriteTimeout,
-		IdleTimeout:       cfg.HTTPIdleTimeout,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       2 * time.Minute,
 	}
 }
 

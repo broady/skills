@@ -20,18 +20,27 @@ stable code unless there is a planned migration. One handler per environment.
 
 ## Setup in main()
 
+The application does not know or care which environment it is in (see
+[config.md](../config.md)). Format and level come from configuration, not an
+environment name.
+
 ```go
-func newLogger(env string) *slog.Logger {
+func newLogger(format string, level slog.Level) *slog.Logger {
+    opts := &slog.HandlerOptions{Level: level}
     var h slog.Handler
-    switch env {
-    case "production":
-        h = slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo})
+    switch format {
+    case "text":
+        opts.AddSource = true
+        h = slog.NewTextHandler(os.Stderr, opts)
     default:
-        h = slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug, AddSource: true})
+        h = slog.NewJSONHandler(os.Stdout, opts)
     }
     return slog.New(h)
 }
 ```
+
+Use `"json"` (the default) for production log aggregation, `"text"` for local
+development readability. Both are config values, not environment detection.
 
 ## Dependency injection -- no global logger
 

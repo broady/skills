@@ -1,5 +1,19 @@
 # Errors
 
+## Contents
+
+- [The One Rule: Handle Once](#the-one-rule-handle-once) — wrap and return interior, log at boundary
+- [Return Signature Design](#return-signature-design-one-source-of-truth) — error as single source of truth, no redundant bools
+- [Wrapping Strategy](#wrapping-strategy) — %w vs %v, terse prefixes, double-wrap avoidance
+- [Structured Domain Errors](#structured-domain-errors) — Kind, Op, Resource pattern
+- [Error Types Decision Matrix](#error-types-decision-matrix) — when to use sentinels vs custom types
+- [Sentinel Errors](#sentinel-errors) — naming, matching with errors.Is
+- [Custom Error Types](#custom-error-types) — exported fields, Unwrap, errors.As
+- [Boundary Error Mapping](#boundary-error-mapping) — HTTP handler and gRPC interceptor patterns
+- [Multi-Error Patterns](#multi-error-patterns) — errors.Join, validation, cleanup
+- [Testing Errors](#testing-errors) — assert specific errors, table-driven patterns
+- [Panic and Recover](#panic-and-recover) — when acceptable, approved recover sites
+
 ## The One Rule: Handle Once
 
 An error is handled exactly once. Handling means making an operational decision:

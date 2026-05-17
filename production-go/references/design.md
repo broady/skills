@@ -1,5 +1,17 @@
 # Go Design Reference
 
+## Contents
+
+1. [Package Design](#1-package-design) — naming, internal/, file organization
+2. [Dependency Injection](#2-dependency-injection) — constructor wiring, context is not DI, context keys
+3. [Interface Design](#3-interface-design) — consumer-side, small interfaces, compile-time checks
+4. [API Design — Hard to Misuse](#4-api-design--hard-to-misuse) — strong types, config structs, builders, functional options (discouraged)
+5. [Struct Design](#5-struct-design) — zero value, field names, embedding, mutex fields, noCopy
+6. [Uber Style Guardrails](#6-uber-style-guardrails) — type assertions, enums, time, nil slices, names, defer
+7. [Code Organization Within a Function](#7-code-organization-within-a-function) — guard clauses, line of sight, variable placement
+8. [Generics Guidelines](#8-generics-guidelines) — when to use, when not to, good patterns
+9. [Copy Slices and Maps at Boundaries](#9-copy-slices-and-maps-at-boundaries) — inbound copies, outbound copies, when to skip
+
 ## 1. Package Design
 
 Name packages for what they **provide**, not what they contain.

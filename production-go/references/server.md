@@ -2,6 +2,17 @@
 
 Complete patterns for HTTP+gRPC servers. Copy, adapt, ship.
 
+## Contents
+
+- [CLI and Configuration](#cli-and-configuration) — Kong, loadConfig, source ownership
+- [Complete main.go](#complete-maingo) — run group, signal handling, shutdown flow
+- [Service Layer](#service-layer) — method shape, domain errors, validation
+- [Handler Adapter](#handler-adapter) — generic decode/validate/call/encode, decoders, error mapping
+- [HTTP Server (stdlib net/http)](#http-server-stdlib-nethttp) — mux, middleware stack, timeouts
+- [Middleware](#middleware) — request ID, logging, auth, no panic recovery
+- [gRPC with Connect (preferred)](#grpc-with-connect-preferred) — Connect handlers, interceptors, traditional gRPC
+- [Health Checks](#health-checks) — liveness vs readiness, ReadinessChecker interface
+
 ## CLI and Configuration
 
 Use `github.com/alecthomas/kong` for CLIs. Kong owns command and flag parsing.

@@ -4,6 +4,12 @@ Investment order (Peter Bourgon): metrics first, structured logging second,
 distributed tracing third. Tracing has the highest operational cost and only
 pays off with many services. Metrics and logs cover 90% of incident response.
 
+## Contents
+
+1. [slog — The Only Logging Library](#1-slog----the-only-logging-library) — setup, injection, scoped loggers, levels, LogAttrs, canonical log lines
+2. [OpenTelemetry for Metrics and Tracing](#2-opentelemetry-for-metrics-and-tracing) — provider setup, middleware spans, manual spans, RED/USE metrics
+3. [Runtime Diagnostics](#3-runtime-diagnostics) — pprof, runtime/metrics, expvar
+
 ---
 
 ## 1. slog -- The Only Logging Library

@@ -5,10 +5,14 @@ description: >
   (bounded goroutines, no fire-and-forget), strict error handling (wrap once,
   handle once), constructor injection (no mutable globals, avoid init), strong
   domain types, system boundary contracts, and bounded resources.
-  Targets high-performance HTTP+gRPC servers on Go 1.26+. Use when writing,
-  reviewing, or scaffolding Go server code, designing Go APIs, setting up Go
-  projects, configuring linters, or when the user mentions production Go,
-  Go best practices, Go server, gRPC, or Go concurrency patterns.
+  Targets high-performance HTTP+gRPC servers on Go 1.26+. Use this skill
+  whenever the user is writing, reviewing, or scaffolding Go code intended for
+  production -- even if they don't explicitly say "production." Also trigger for
+  Go project setup, Go API design, linter configuration, error handling patterns,
+  graceful shutdown, dependency injection in Go, Go concurrency patterns, gRPC or
+  Connect service design, Go code review, or any task where Go correctness and
+  safety matter. If the user mentions Go and the code will run in a server,
+  service, CLI tool, or library used by others, use this skill.
   Complements the go-testing skill.
 license: Apache-2.0
 compatibility: Requires Go 1.26+, golangci-lint
@@ -226,15 +230,17 @@ Taskfile.yml               # build, test, lint, run
 
 ## References
 
-| File | Covers |
-|---|---|
-| [references/concurrency.md](references/concurrency.md) | Goroutine lifecycle, worker pools, sync vs channels, anti-patterns |
-| [references/errors.md](references/errors.md) | Error types, wrapping, sentinels, custom types, boundary mapping |
-| [references/design.md](references/design.md) | Packages, DI, interfaces, API design, config vs builders |
-| [references/server.md](references/server.md) | HTTP+gRPC scaffold, graceful shutdown, middleware, health checks |
-| [references/observability.md](references/observability.md) | slog, OpenTelemetry, metrics, tracing, pprof |
-| [references/testing.md](references/testing.md) | goleak, property testing, integration tests, benchmarks, fakes |
-| [references/linting.md](references/linting.md) | golangci-lint config, linter rationale, CI setup |
+Read a reference file when the task involves its domain. Skip it for unrelated work.
+
+| File | Covers | Read when... |
+|---|---|---|
+| [references/concurrency.md](references/concurrency.md) | Goroutine lifecycle, worker pools, sync vs channels, closure pitfalls, anti-patterns | Writing code that spawns goroutines, uses channels, coordinates workers, or protects shared state |
+| [references/errors.md](references/errors.md) | Error types, wrapping, sentinels, custom types, boundary mapping, panic/recover | Designing error contracts, adding error handling, mapping errors at HTTP/gRPC boundaries |
+| [references/design.md](references/design.md) | Packages, DI, interfaces, API design, config structs, builders, generics, defensive copies | Structuring packages, designing constructors or public APIs, choosing between config patterns |
+| [references/server.md](references/server.md) | HTTP+gRPC scaffold, graceful shutdown, middleware, health checks, Connect | Building a new server, adding endpoints, wiring shutdown, or setting up middleware |
+| [references/observability.md](references/observability.md) | slog, OpenTelemetry, metrics, tracing, pprof, canonical log lines | Adding logging, metrics, or tracing; diagnosing performance; setting up observability |
+| [references/testing.md](references/testing.md) | goleak, property testing, integration tests, benchmarks, fakes, coverage | Writing tests for concurrent code, setting up integration infra, or benchmarking |
+| [references/linting.md](references/linting.md) | golangci-lint config, linter rationale, CI setup | Configuring linters or adding a new project's CI pipeline |
 
 ## Packages
 

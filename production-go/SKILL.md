@@ -3,8 +3,11 @@ name: production-go
 description: >
   Strict production Go standards for agent-produced or reviewed Go code. Trigger for
   almost all non-trivial Go work: services, libraries, CLIs, concurrency, error
-  handling, HTTP/gRPC, DB access, config, linting, and observability. For toy
-  examples, apply only the safety rules relevant to the task.
+  handling, HTTP/gRPC, DB access, config, linting, and observability. Also trigger
+  when the user mentions goroutines, context, slog, errgroup, circuit breaker, retry,
+  health checks, graceful shutdown, golangci-lint, transaction management, or asks to
+  review Go code for production safety. For toy examples, apply only the safety rules
+  relevant to the task.
 license: Apache-2.0
 compatibility: Requires Go 1.26+, golangci-lint
 metadata:

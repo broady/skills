@@ -3,6 +3,17 @@
 Multi-layered flow control patterns extracted from NATS Server, OTel Collector,
 Loki, Traefik, kafka-go, and Caddy. Never rely on a single mechanism.
 
+## Contents
+
+- [1. Backpressure Layers](#1-backpressure-layers)
+- [2. Bounded Queue Patterns](#2-bounded-queue-patterns)
+- [3. Slow Consumer Handling (NATS Pattern)](#3-slow-consumer-handling-nats-pattern)
+- [4. Per-Tenant Rate Limiting](#4-per-tenant-rate-limiting)
+- [5. Memory-Based Admission Control (OTel)](#5-memory-based-admission-control-otel)
+- [6. Context Ownership Transfer](#6-context-ownership-transfer)
+- [Decision Table](#decision-table)
+- [Anti-Patterns](#anti-patterns)
+
 ## 1. Backpressure Layers
 
 | Layer | Mechanism | Example | When it fires |

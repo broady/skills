@@ -97,12 +97,10 @@ func (c *Controller) Run(ctx context.Context, workers int) {
 
     var wg sync.WaitGroup
     for range workers {
-        wg.Add(1)
-        go func() {
-            defer wg.Done()
+        wg.Go(func() {
             for c.processNextWorkItem(ctx) {
             }
-        }()
+        })
     }
 
     <-ctx.Done()
@@ -273,14 +271,12 @@ func slowStartBatch(count int, initialBatchSize int, fn func() error) (int, erro
     for batchSize := min(remaining, initialBatchSize); batchSize > 0; batchSize = min(2*batchSize, remaining) {
         errCh := make(chan error, batchSize)
         var wg sync.WaitGroup
-        wg.Add(batchSize)
         for range batchSize {
-            go func() {
-                defer wg.Done()
+            wg.Go(func() {
                 if err := fn(); err != nil {
                     errCh <- err
                 }
-            }()
+            })
         }
         wg.Wait()
         curSuccesses := batchSize - len(errCh)

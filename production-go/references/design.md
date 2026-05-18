@@ -110,7 +110,7 @@ func run(ctx context.Context) error {
 ```
 
 Server lifecycle and signal handling belong in the runner; see
-[server.md](server.md) for the complete pattern.
+[server/scaffold.md](server/scaffold.md) for the complete pattern.
 
 The helpers should only wire dependencies. They should not hide global state,
 start background work, read ambient configuration, or choose implementations

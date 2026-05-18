@@ -1,5 +1,14 @@
 # Transaction Management
 
+## Contents
+
+- [Pass transactions explicitly](#pass-transactions-explicitly)
+- [Querier interface](#querier-interface)
+- [WithTx helper for scoping](#withtx-helper-for-scoping)
+- [Nested service calls](#nested-service-calls)
+- [Rules](#rules)
+- [Connection Safety (pgx)](#connection-safety-pgx)
+
 ## Pass transactions explicitly
 
 Transactions are function parameters, not context values. This makes the scope

@@ -1,5 +1,13 @@
 # Async Work
 
+## Contents
+
+- [External message brokers (preferred)](#external-message-brokers-preferred)
+- [Retry with backoff](#retry-with-backoff)
+- [At-least-once delivery](#at-least-once-delivery)
+- [In-process queues (specific use cases)](#in-process-queues-specific-use-cases)
+- [Decision table](#decision-table)
+
 ## External message brokers (preferred)
 
 For durable async processing in production, use an external message broker

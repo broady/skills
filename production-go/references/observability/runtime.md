@@ -1,5 +1,12 @@
 # Runtime Diagnostics
 
+## Contents
+
+- [Runtime diagnostics -- available to operators, gated from users](#runtime-diagnostics----available-to-operators-gated-from-users)
+- [pprof goroutine labels](#pprof-goroutine-labels)
+- [runtime/metrics for GC and goroutines](#runtimemetrics-for-gc-and-goroutines)
+- [expvar for custom debug state](#expvar-for-custom-debug-state)
+
 ## Runtime diagnostics -- available to operators, gated from users
 
 Runtime diagnostics must be available to operators without redeploying, but

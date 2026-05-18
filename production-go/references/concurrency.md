@@ -152,7 +152,7 @@ func (w *Worker) Run(ctx context.Context) error {
 }
 ```
 
-### WaitGroup.Go — stdlib fire-and-wait (Go 1.24+)
+### WaitGroup.Go — stdlib fire-and-wait (Go 1.25+)
 
 For simple "start N goroutines and wait" patterns where you don't need error
 returns or cancellation-on-first-error, use `sync.WaitGroup.Go` directly:

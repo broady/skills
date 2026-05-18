@@ -524,7 +524,7 @@ Prefer `synctest` over mocking time interfaces — it works with the real
 
 | Question | Answer |
 |---|---|
-| Need fire-and-wait (no error returns)? | `sync.WaitGroup.Go` (Go 1.24+) |
+| Need fire-and-wait (no error returns)? | `sync.WaitGroup.Go` (Go 1.25+) |
 | Need concurrent work with error returns? | `errgroup.WithContext` |
 | Need to limit concurrency? | `errgroup.SetLimit` or `semaphore.Weighted` |
 | Need to protect shared state? | `sync.Mutex` |

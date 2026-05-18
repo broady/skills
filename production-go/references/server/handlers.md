@@ -19,9 +19,10 @@ receiver, so the adapter sees `func(context.Context, string) (*Order, error)`).
 
 ```go
 // Domain errors. Services return these; the HTTP layer maps them to status codes.
+// Prefix with domain noun for grep-ability (see references/errors.md).
 var (
-	ErrNotFound   = errors.New("not found")
-	ErrValidation = errors.New("validation")
+	ErrNotFound   = errors.New("order: not found")
+	ErrValidation = errors.New("order: validation")
 )
 
 // Validator is optionally implemented by request types. The handler adapter

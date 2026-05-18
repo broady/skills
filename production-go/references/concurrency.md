@@ -7,7 +7,7 @@ Core thesis: most channel-based patterns are worse than the mutex or errgroup eq
 
 ## Contents
 
-1. [Goroutine Lifecycle Management](#1-goroutine-lifecycle-management) — errgroup, run.Group, safe.Go, safe.Collect, goroutine gate, ctx.Done
+1. [Goroutine Lifecycle Management](#1-goroutine-lifecycle-management) — WaitGroup.Go, errgroup, run.Group, safe.Collect, goroutine gate, ctx.Done
 2. [Bounded Concurrency](#2-bounded-concurrency) — SetLimit, semaphore, worker pools
 3. [Channels vs Sync Primitives](#3-channels-vs-sync-primitives) — mutex, atomic, OnceValue, Locked[T], when channels are correct
 
@@ -21,9 +21,9 @@ Treat every goroutine as a child task with an owner. A child task must not outli
 the scope that owns and waits for it. This preserves local reasoning: when a
 function returns, its work is done, including any concurrent work it started.
 
-In Go, `errgroup`, `run.Group`, `safe.Go`, and `safe.Collect` are the approved
-nursery-like mechanisms. They provide the structural guarantee: a parent can
-start child work, cancel it, observe its errors, and wait for it.
+In Go, `sync.WaitGroup.Go`, `errgroup`, `run.Group`, and `safe.Collect` are the
+approved nursery-like mechanisms. They provide the structural guarantee: a parent
+can start child work, cancel it, observe its errors, and wait for it.
 
 A raw `go` statement is an escape hatch, not a default. It is allowed only when
 the surrounding code documents:
@@ -44,9 +44,10 @@ Hidden background work breaks the function abstraction.
 Every goroutine must be traceable to a lifecycle manager that (a) waits for it
 to finish and (b) can tell it to stop. No exceptions.
 
-Prefer `errgroup`, `run.Group`, or `safe.Go`. A raw `go` statement is allowed
-only when the surrounding code shows the owner, stop path, wait path, and reason.
-Do not use raw `go` in examples unless ownership is the point of the example.
+Prefer `sync.WaitGroup.Go`, `errgroup`, or `run.Group`. A raw `go` statement is
+allowed only when the surrounding code shows the owner, stop path, wait path,
+and reason. Do not use raw `go` in examples unless ownership is the point of
+the example.
 
 **Callers own concurrency.** Library functions return results; they do not
 spawn internal goroutines. The caller decides whether work is concurrent and
@@ -151,43 +152,56 @@ func (w *Worker) Run(ctx context.Context) error {
 }
 ```
 
-### Panic supervision with safe.Go
+### WaitGroup.Go — stdlib fire-and-wait (Go 1.24+)
 
-Production goroutines must return errors for ordinary failures. A panic means
-a programmer bug or true invariant violation. A goroutine supervisor is one of
-two approved `recover` sites (the other is package-internal control flow — see
-[errors.md](errors.md#approved-recover-sites)). The supervisor converts the
-panic into an owner-visible error and lets the owning group cancel the rest of
-the work. It must not swallow the panic and continue silently.
+For simple "start N goroutines and wait" patterns where you don't need error
+returns or cancellation-on-first-error, use `sync.WaitGroup.Go` directly:
 
-Copy or import the implementation from
-[../packages/safe](../packages/safe). It has no third-party dependencies; its
-small `Group` interface is satisfied by `*errgroup.Group`.
+```go
+var wg sync.WaitGroup
+for _, shard := range shards {
+    wg.Go(func() {
+        shard.Flush(ctx)
+    })
+}
+wg.Wait()
+```
+
+`WaitGroup.Go` does not recover panics — a panic in any goroutine crashes
+the process (same as our policy). It also does not return errors; if you need
+error propagation or cancel-on-first-error, use `errgroup`.
+
+### errgroup with named errors
+
+Wrap errors with context at the call site. No helper needed:
 
 ```go
 g, ctx := errgroup.WithContext(ctx)
-// Naturally bounded: exactly one supervised goroutine.
-safe.Go(g, "flush metrics", func() error {
-	return flusher.Run(ctx)
+g.Go(func() error {
+    if err := flusher.Run(ctx); err != nil {
+        return fmt.Errorf("flush metrics: %w", err)
+    }
+    return nil
 })
 if err := g.Wait(); err != nil {
-	return fmt.Errorf("run workers: %w", err)
+    return fmt.Errorf("run workers: %w", err)
 }
 ```
+
+Panics in errgroup goroutines crash the process — errgroup does not recover.
 
 Always pair `errgroup` with `SetLimit` — unbounded concurrency requires a
 justifying comment explaining why the number of goroutines is naturally bounded
 (e.g., fixed number of shards).
 
-Do not use this wrapper to make panics acceptable. Use it to ensure panics are
-observable, cancel sibling work, and fail the owner.
-
 ### Best-effort fan-out/collect with safe.Collect
 
 When individual failures are tolerable (prefetch, cache warming, batch lookups),
 use `safe.Collect`. It dispatches work to bounded goroutines and returns
-per-item results. Panics are recovered and reported as `*PanicError` — the
-caller sees them, not the process.
+per-item results with per-item errors.
+
+Panics in item functions crash the process — they are not recovered. Validate
+untrusted inputs before passing them to Collect.
 
 `safe.Collect` panics when `limit <= 0`; that is programmer misuse, not a
 production runtime failure path. Validate config-derived limits before calling
@@ -221,15 +235,15 @@ for _, r := range results {
 
 | Scenario | Use |
 |----------|-----|
-| All items must succeed or the operation fails | `errgroup` + `safe.Go` |
+| All items must succeed or the operation fails | `errgroup.WithContext` |
 | Partial results are useful; failures are logged but non-fatal | `safe.Collect` |
 | Order of results matters (must match input order) | `safe.Collect` (preserves order) |
 | Need to cancel remaining work on first error | `errgroup.WithContext` |
 
-`safe.Collect` is an approved goroutine supervisor: same as `safe.Go`, it is
-the one place where `recover` is justified. Application code never calls
-`recover` — the supervisor converts panics to per-item errors visible to the
-caller.
+`safe.Collect` does **not** recover panics. A panic in any item function
+crashes the process — this is intentional. Panics indicate programmer errors
+where state may be corrupted; recovering and returning partial results would
+mask the corruption. Validate untrusted inputs before passing them to Collect.
 
 ### Goroutine gate — long-lived independent goroutines
 
@@ -238,19 +252,15 @@ servers), errgroup's "first error cancels all" semantic is wrong — one connect
 failing should not tear down all others. Use a gate: a mutex-guarded boolean that
 refuses new goroutines during shutdown, paired with a WaitGroup for the join point.
 
-The gate function is a goroutine supervisor (an approved `recover` site). A raw
-`go` is justified here because the gate itself provides the lifecycle: owner
-(Server), stop path (context cancellation), wait path (WaitGroup), and admission
-control (boolean gate).
+A raw `go` is justified here because the gate itself provides the lifecycle:
+owner (Server), stop path (context cancellation), wait path (WaitGroup), and
+admission control (boolean gate).
 
 Normal errors (connection closed, client timeout) are logged and the server
-continues — one bad connection is expected. Panics are different: a panic is a
-programmer error and shared state may be corrupted. The supervisor recovers the
-panic to avoid a raw process crash (which would skip drain), logs it with full
-stack, and triggers graceful shutdown. In-flight connections drain within the
-shutdown timeout, then the process exits and the orchestrator restarts it. This
-follows the supervisor rule: the owner receives a fatal error and acts on it
-(cancel siblings, shut down) — it does not continue as if nothing happened.
+continues — one bad connection is expected. Panics are **not recovered**. A
+panic is a programmer error; state may be corrupted. The process crashes and
+the orchestrator restarts it. This follows Google's Go style guidance:
+recovering panics to avoid crashes is a historical mistake that masks corruption.
 
 ```go
 type Server struct {
@@ -271,16 +281,7 @@ func (s *Server) startGoRoutine(name string, f func(context.Context) error) bool
     s.wg.Add(1)
     go func() {
         defer s.wg.Done()
-        defer func() {
-            if r := recover(); r != nil {
-                s.logger.LogAttrs(s.ctx, slog.LevelError, "goroutine panicked",
-                    slog.String("name", name),
-                    slog.Any("panic", r),
-                    slog.String("stack", string(debug.Stack())),
-                )
-                s.cancel() // panic = programmer error; trigger graceful shutdown
-            }
-        }()
+        // No recover. A panic crashes the process. The orchestrator restarts it.
         if err := f(s.ctx); err != nil && !errors.Is(err, context.Canceled) {
             s.logger.LogAttrs(s.ctx, slog.LevelError, "goroutine failed",
                 slog.String("name", name),
@@ -423,6 +424,12 @@ var defaultTemplates = sync.OnceValue(func() *template.Template {
 Use for expensive, deterministic one-time initialization with no I/O, no request
 context, and no cleanup requirement. Prefer constructor injection for resources
 that need lifecycle management (database pools, clients, workers).
+
+**Panic replay:** If the init function panics, `OnceValue` records the panic and
+replays it on every subsequent call. The panic is never swallowed — consistent
+with our "panics crash the process" policy. This means a `Must*` inside a
+`OnceValue` is safe: if the template fails to parse, every caller panics with
+the same value.
 
 ### Compound mutations — the Get/Set gap
 

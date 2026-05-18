@@ -80,16 +80,17 @@ func (w *statusWriter) WriteHeader(code int) {
 
 ## No panic recovery middleware
 
-Handlers return errors and map them at the boundary. Do not add HTTP/gRPC
-middleware that recovers panics. A panic is a bug, not a request-level error
-path. The standard `net/http` server recovers panics from handlers; do not copy
-that behavior into application middleware. Make panics observable through normal
-process supervision, server error logs, and crash reporting; do not translate
-them into ordinary application control flow.
+Do not add HTTP/gRPC middleware that recovers panics. A panic is a programmer
+error — the process must crash. Google's Go style guide calls net/http's
+built-in handler recovery "a historical mistake." Do not replicate it.
 
-Use the goroutine supervisor pattern in
-[concurrency.md](../concurrency.md#panic-supervision-with-safego) for owned
-background goroutines that must report panics to their owner.
+A panic means state may be corrupted. Recovering it to return a 500 response
+and continue serving risks operating on corrupted state. Let the process crash.
+The orchestrator restarts it. Make panics observable through crash reporting
+and process supervision, not through middleware that converts them into
+responses.
+
+See [errors.md](../errors.md#approved-recover-sites) for the full policy.
 
 ## Auth
 

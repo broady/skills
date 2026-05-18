@@ -59,7 +59,7 @@ and agent-produced code. Tool-generated files (protobuf stubs, sqlc output,
 1. **No mutable globals.** Package-level `var` only for sentinels, compile-time checks, and immutable-by-construction values. Everything else flows through constructors. See [references/design.md](references/design.md).
 2. **Avoid `init()`.** Prefer explicit registry assembly. `init()` is acceptable only for deterministic metadata/factory registration with no I/O, goroutines, live dependencies, or config reads. See [references/design.md](references/design.md) and [references/plugin-systems.md](references/plugin-systems.md).
 3. **Errors: propagate with context, handle once at the boundary.** Use `%w` only when exposing the cause is stable contract; otherwise `%v` or map to domain error. Never log and return. See [references/errors.md](references/errors.md).
-4. **No naked goroutines.** A goroutine's maximum lifetime must be bounded by the scope that owns and waits for it. Start goroutines via `errgroup`, `run.Group`, `safe.Go`, `safe.Collect`, or an explicit owner that can cancel and wait. Looping or blocking goroutines select on `ctx.Done()`. Raw `go` requires documented owner, stop path, wait path, and reason. For servers with goroutine-per-connection patterns bounded by MaxConn, a goroutine gate function (check state + WaitGroup.Add + go) is acceptable; see [references/concurrency-patterns.md](references/concurrency-patterns.md).
+4. **No naked goroutines.** A goroutine's maximum lifetime must be bounded by the scope that owns and waits for it. Start goroutines via `sync.WaitGroup.Go`, `errgroup`, `run.Group`, `safe.Collect`, or an explicit owner that can cancel and wait. Looping or blocking goroutines select on `ctx.Done()`. Raw `go` requires documented owner, stop path, wait path, and reason. For servers with goroutine-per-connection patterns bounded by MaxConn, a goroutine gate function (check state + WaitGroup.Add + go) is acceptable; see [references/concurrency-patterns.md](references/concurrency-patterns.md).
 5. **Bounded concurrency.** `errgroup.SetLimit(n)` or `semaphore.Weighted`. Never unbounded goroutines in a loop.
 6. **Graceful shutdown is mandatory and phased.** Drain → Hammer → Terminate. See [references/server/scaffold.md](references/server/scaffold.md).
 7. **Bound every resource explicitly.** HTTP servers/clients: explicit timeouts. DB pools: `MaxConns`, lifetime, idle time. Retries: max attempts + backoff. Queues: explicit capacity. Shutdown: deadline on drain.
@@ -69,7 +69,7 @@ and agent-produced code. Tool-generated files (protobuf stubs, sqlc output,
 11. **Deployment-varying operational parameters from configuration.** Addresses, credentials, feature flags, pool sizes, and values that differ between environments are loaded from config. Protocol-level correctness values (timeouts derived from downstream SLOs, security boundaries) live in code with documented rationale.
 12. **Copy mutable data at ownership boundaries.** Store a caller-provided slice/map → copy it. Return internal state → return a snapshot. See [references/design-idioms.md](references/design-idioms.md).
 13. **Context is not a service locator.** First parameter, never stored in a struct. Used for cancellation, deadlines, request-scoped values. Dependencies go through constructors. Exception: storing a context that represents component/config lifecycle (not request lifetime) is acceptable when the context is created at provision and cancelled at unload.
-14. **No panic, no recover in application code.** Return errors. `recover` only in goroutine supervisors (`safe.Go`, `safe.Collect`), package-internal entry points where panic is structured longjmp, and aborting infrastructure/system boundaries. `panic()` is limited to programmer-error invariants in Must* constructors, exhaustive switches, and `_ struct{}` API evolution safety. See [references/errors.md](references/errors.md).
+14. **No panic, no recover in application code.** Return errors. Panics crash the process; the orchestrator restarts it. `recover` appears only in package-internal entry points (structured longjmp for recursive code) and infrastructure boundaries (add observability then re-panic — the process still crashes). Goroutine managers (`errgroup`, `safe.Collect`, goroutine gates) do **not** recover panics. `panic()` is limited to programmer-error invariants in Must* constructors, exhaustive switches, and `_ struct{}` API evolution safety. See [references/errors.md](references/errors.md).
 
 ## Output Contracts
 
@@ -141,8 +141,9 @@ and libraries.
 
 | I need to... | Do this |
 |---|---|
-| Run N things concurrently (all must succeed) | `errgroup.WithContext` + `SetLimit` |
-| Run N things concurrently (best-effort collect) | `safe.Collect` — bounded, panic-safe, per-item errors |
+| Run N things concurrently (fire-and-wait, no errors) | `sync.WaitGroup.Go` (Go 1.24+) |
+| Run N things concurrently (all must succeed, error returns) | `errgroup.WithContext` + `SetLimit` |
+| Run N things concurrently (best-effort collect) | `safe.Collect` — bounded, per-item errors, panics crash |
 | Pass a dependency | Constructor parameter |
 | Configure optional settings | Config struct with zero-value defaults + `Validate() error` |
 | Handle an error | Add operation context and return; `%w` only for stable contract |
@@ -244,4 +245,4 @@ Load a reference file only when the task involves its domain. Skip unrelated one
 
 | Package | Use |
 |---|---|
-| [packages/safe](packages/safe) | `safe.Go` (supervised goroutine), `safe.Collect` (bounded best-effort fan-out), `safe.Locked[T]` (mutex-protected value with closure-based compound mutations). Copy into a project or import when vendored. |
+| [packages/safe](packages/safe) | `safe.Collect` (bounded best-effort fan-out with per-item errors), `safe.Locked[T]` (mutex-protected value with closure-based compound mutations). Panics are not recovered — they crash the process. Copy into a project or import when vendored. |

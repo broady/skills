@@ -407,6 +407,37 @@ func (m *SyncMap[K, V]) Store(key K, val V) {
 }
 ```
 
+### The `~[]E` constraint — accept named slice types
+
+When writing generic helpers over slices or maps, use the underlying type
+constraint (`~[]E`, `~map[K]V`) so named types work without conversion. This
+is the dominant stdlib pattern (see `slices`, `maps` packages):
+
+```go
+// GOOD: accepts []string, []int, type Tags []string, etc.
+func Filter[S ~[]E, E any](s S, keep func(E) bool) S {
+    var result S
+    for _, v := range s {
+        if keep(v) {
+            result = append(result, v)
+        }
+    }
+    return result
+}
+
+// GOOD: two-type-param variant for cross-type operations.
+func Map[S ~[]E, E any, R any](s S, fn func(E) R) []R {
+    result := make([]R, len(s))
+    for i, v := range s {
+        result[i] = fn(v)
+    }
+    return result
+}
+```
+
+Without `~`, a `type IDs []string` would require conversion to `[]string`
+before passing to the function — defeating the purpose of strong domain types.
+
 Bad generic usage:
 
 ```go

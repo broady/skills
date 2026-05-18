@@ -657,21 +657,21 @@ invariant has been violated and the program is in an inconsistent state.
 
 ### Approved recover sites
 
-`recover` is never used in application code. It appears only in code whose
-purpose is to own goroutines or contain panics at a documented boundary. There
-are exactly three approved patterns:
+`recover` is never used in application code. Panics crash the process; the
+orchestrator restarts it. This follows Google's Go style guidance: "The
+standard `net/http` server violates this advice and recovers panics from
+request handlers. Consensus among experienced Go engineers is that this was a
+historical mistake."
 
-**1. Goroutine supervisors** (`safe.Go`, `safe.Collect`):
+Goroutine managers (`errgroup`, `safe.Collect`, goroutine gates) do **not**
+recover panics. A panic indicates a programmer error where state may be
+corrupted. Recovering and continuing — even to "shut down gracefully" — risks
+operating on corrupted state. Let it crash.
 
-A supervisor owns goroutines, waits for them, and converts panics into errors
-visible to the owner. The owner does not continue as if nothing happened — it
-receives a fatal error and acts on it (cancel siblings, shut down). This is NOT
-the "broad recovery middleware" anti-pattern (net/http's handler recovery, which
-swallows panics and continues serving with potentially corrupted state).
+There are exactly two approved `recover` patterns, neither of which prevents
+crashes:
 
-See [concurrency.md](concurrency.md) for usage.
-
-**2. Package-internal panic+recover for deeply recursive code:**
+**1. Package-internal panic+recover for deeply recursive code:**
 
 Adapted from the Google Go Style Guide. In recursive descent parsers, tree
 walkers, or other deeply nested traversals, threading `error` through every
@@ -716,31 +716,41 @@ func (p *parser) expect(tok tokenType) {
 - This is a deliberate design choice, not a default. Prefer normal error
   returns unless the recursion depth genuinely makes them unwieldy.
 
-**3. Infrastructure boundary recovery that aborts the operation:**
+**Stdlib note:** `fmt` intentionally violates the "re-panic unknown values"
+rule — it catches all panics from user-supplied `Stringer`/`Error()` methods
+and renders them inline as `%!v(PANIC=...)` rather than crashing. This is
+because crashing `Printf` is unacceptable for an output function. Do not
+copy this pattern in application code.
 
-Transport infrastructure and narrow system boundaries around third-party code
-that may panic on malformed input may recover only to attach structured
-observability and then abort the operation. They must not translate the panic
-into ordinary application control flow or continue as if the operation
-succeeded. For `net/http`, log panic metadata and re-panic with
-`http.ErrAbortHandler` after ensuring request-scoped identifiers are recorded.
-For gRPC/Connect, prefer process-level supervision; only use equivalent
-infrastructure recovery when it aborts the request and preserves panic
-visibility.
+**2. Infrastructure boundary recovery that re-panics:**
+
+Narrow system boundaries around third-party code that may panic on malformed
+input may recover only to attach structured observability and then **re-panic**.
+They must not translate the panic into an error, a 500 response, or ordinary
+application control flow. The process still crashes; the recover exists solely
+to ensure request-scoped identifiers and structured metadata are recorded
+before the crash.
+
+For `net/http` infrastructure layers that must add observability before crash:
+log panic metadata, then re-panic with the original value (or
+`http.ErrAbortHandler` to suppress the redundant `net/http` log). For
+gRPC/Connect, prefer letting the panic propagate without recovery.
 
 ### What is NOT approved
 
+- **Any recover that prevents a crash.** If the code panicked, the process
+  must crash. Recovering panics to return 500s, to log-and-continue, or to
+  "avoid downtime" masks corrupted state and causes worse incidents later.
 - HTTP/gRPC panic recovery middleware that converts panics into normal 500
-  responses and continues. Google's style guide calls net/http's handler
-  recovery "a historical mistake." A broad recover that catches panics from
-  arbitrary code cannot know whether state is corrupted. Do not add
-  `recovery.UnaryServerInterceptor()` or equivalent unless it follows approved
-  pattern 3.
-- Recovering panics to "avoid crashes." If the code panicked, something is
-  wrong. Make it visible, don't hide it.
-- Recovering in application code and continuing the current operation. Only
-  supervisors, package entry points, and aborting infrastructure/system
-  boundaries may recover.
+  responses. Do not add `recovery.UnaryServerInterceptor()` or equivalent.
+  net/http's built-in recovery closes the connection (it does not continue
+  serving on it) but keeps the server accepting new connections — potentially
+  with corrupted process-level state. Google's style guide calls this "a
+  historical mistake."
+- Goroutine supervisors that convert panics to errors and continue. The owner
+  cannot know whether shared state is corrupted. Let the process crash.
+- Recovering in application code for any reason other than the two approved
+  patterns above (structured longjmp, observability-then-re-panic).
 
 **Acceptable panic() sites beyond Must* constructors:**
 

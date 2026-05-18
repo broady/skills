@@ -474,6 +474,11 @@ failsafe.With[*http.Response](
 
 ### HTTP client template
 
+The stdlib `DefaultTransport` has `MaxIdleConnsPerHost: 2`. For services
+calling a single upstream at high concurrency, this forces constant TCP/TLS
+renegotiation — a notorious production bottleneck. Always configure Transport
+explicitly.
+
 ```go
 func NewHTTPClient(maxConnsPerHost int) *http.Client {
     dialer := &net.Dialer{
@@ -488,7 +493,7 @@ func NewHTTPClient(maxConnsPerHost int) *http.Client {
         ExpectContinueTimeout:  1 * time.Second,
         MaxConnsPerHost:        maxConnsPerHost,
         MaxIdleConns:           maxConnsPerHost * 2,
-        MaxIdleConnsPerHost:    maxConnsPerHost,
+        MaxIdleConnsPerHost:    maxConnsPerHost, // stdlib default is 2 — too low
         IdleConnTimeout:        90 * time.Second,
     }}
 }

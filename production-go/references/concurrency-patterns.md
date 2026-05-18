@@ -183,13 +183,55 @@ this is acceptable. When it is not, detach the inner context:
 
 ```go
 v, err, _ := c.sf.Do(id, func() (any, error) {
-    // WithoutCancel prevents one caller's cancellation from failing others.
-    // Add an explicit timeout — the parent's deadline is also detached.
+    // WithoutCancel strips cancellation AND deadlines from the parent.
+    // An explicit timeout is mandatory — without it, the call has no bound.
     ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
     defer cancel()
     return c.store.LoadUser(ctx, id)
 })
 ```
+
+### context.AfterFunc — deferred cleanup on cancellation
+
+`context.AfterFunc` (Go 1.21+) runs a function in its own goroutine when a
+context is cancelled. This is a stdlib-blessed "naked goroutine" — the
+goroutine has no explicit owner in your code. Manage its lifecycle via the
+returned `stop` func:
+
+```go
+conn := acquireConnection()
+stop := context.AfterFunc(ctx, func() {
+    conn.Close() // called in a new goroutine when ctx is cancelled
+})
+defer stop() // prevent the goroutine from firing if we return first
+```
+
+**Rules for AfterFunc:**
+- Always call the returned `stop` func (in a defer or cleanup path).
+- Keep `f` short-lived and non-blocking — it runs in an unmanaged goroutine.
+- Do not use AfterFunc as a general-purpose goroutine launcher; it is for
+  context-triggered cleanup callbacks.
+
+### context.WithoutCancel — strips deadlines too
+
+`context.WithoutCancel` returns a context that is never cancelled and has
+**no deadline**. It preserves only the parent's values. This means code
+running under a `WithoutCancel` context has no bound unless you add one:
+
+```go
+// WRONG: no timeout, no deadline — the call can hang forever.
+detached := context.WithoutCancel(ctx)
+result, err := s.dependency.Call(detached, req)
+
+// RIGHT: explicit timeout replaces the stripped deadline.
+detached, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+defer cancel()
+result, err := s.dependency.Call(detached, req)
+```
+
+Use `WithoutCancel` only when you explicitly need to outlive the parent (e.g.,
+async post-processing after a handler returns, singleflight deduplication).
+Always pair it with an explicit timeout.
 
 ---
 
@@ -434,14 +476,18 @@ profile is complementary for production observability.
 
 ## 5. Deterministic Time Testing with synctest
 
-Use `synctest.Run` (Go 1.24+) to test ticker/timer code without real sleeps.
-Fake time advances only when all goroutines in the bubble are blocked.
+Use `testing/synctest` (Go 1.24+) to test ticker/timer code without real
+sleeps. Fake time advances only when all goroutines in the bubble are blocked.
+
+The API is `synctest.Test(t, func(t *testing.T))` — it integrates directly
+with `*testing.T`. Use `t.Context()` for cancellation instead of manual
+`context.WithCancel(context.Background())`.
 
 ```go
 func TestFlusherTick(t *testing.T) {
-    synctest.Run(func() {
+    synctest.Test(t, func(t *testing.T) {
         var count atomic.Int64
-        ctx, cancel := context.WithCancel(context.Background())
+        ctx := t.Context()
         go func() {
             ticker := time.NewTicker(5 * time.Second)
             defer ticker.Stop()
@@ -456,14 +502,18 @@ func TestFlusherTick(t *testing.T) {
         }()
 
         time.Sleep(12 * time.Second) // advances fake clock, not wall time
-        cancel()
-        synctest.Wait() // wait for goroutine to exit
+        // t.Context() is cancelled when the test ends; goroutine exits.
         if got := count.Load(); got != 2 {
             t.Fatalf("expected 2 ticks, got %d", got)
         }
     })
 }
 ```
+
+**Note:** Mutex operations are not "durably blocking" in synctest — the
+bubble does not advance fake time while waiting on a mutex. If your test
+needs to observe state protected by a mutex, use a channel or WaitGroup
+signal to coordinate rather than relying on time advancement.
 
 Prefer `synctest` over mocking time interfaces — it works with the real
 `time` package and catches races that interface mocks hide.
@@ -474,16 +524,18 @@ Prefer `synctest` over mocking time interfaces — it works with the real
 
 | Question | Answer |
 |---|---|
-| Need concurrent work? | `errgroup.WithContext` |
+| Need fire-and-wait (no error returns)? | `sync.WaitGroup.Go` (Go 1.24+) |
+| Need concurrent work with error returns? | `errgroup.WithContext` |
 | Need to limit concurrency? | `errgroup.SetLimit` or `semaphore.Weighted` |
 | Need to protect shared state? | `sync.Mutex` |
 | Need read-heavy locking? | `sync.RWMutex` (only after profiling) |
 | Need a counter/flag? | `sync/atomic` typed wrappers (`atomic.Bool`, `atomic.Int64`, etc.) |
 | Need to signal done? | `context.CancelFunc` or `close(chan struct{})` |
-| Need one async result? | Prefer synchronous code; if adapting an async API, use `chan T` buffered 1 only with owner/stop/wait and context-aware producer documented, otherwise `errgroup`/`safe.Go` |
+| Need one async result? | Prefer synchronous code; if adapting an async API, use `chan T` buffered 1 only with owner/stop/wait and context-aware producer documented, otherwise `errgroup` |
 | Need a pipeline? | Bounded channel + worker goroutines via errgroup |
 | Need multiple subsystems? | `errgroup` (shared cancel) or `oklog/run.Group` (independent interrupt/cleanup) |
 | Need periodic background work? | `time.Ticker` + `select` on `ctx.Done()` |
+| Need cleanup on context cancellation? | `context.AfterFunc` (call returned `stop` in a defer) |
 | Need contractual rate limiting? | `golang.org/x/time/rate.Limiter` (enforces "N per second" contracts; not a substitute for adaptive load shedding — see [resilience.md](resilience.md)) |
 | Need to deduplicate concurrent requests? | `golang.org/x/sync/singleflight` |
 | Need to detect goroutine leaks? | `go.uber.org/goleak` |

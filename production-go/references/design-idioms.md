@@ -10,8 +10,11 @@ See [design.md](design.md) for the core model (packages, DI, interfaces, API des
 3. [Uber Style Guardrails](#3-uber-style-guardrails) — type assertions, enums, time, nil slices, names, defer
 4. [Code Organization Within a Function](#4-code-organization-within-a-function) — guard clauses, line of sight, variable placement
 5. [Generics Guidelines](#5-generics-guidelines) — when to use, when not to, good patterns
-6. [API Evolution Safety](#6-api-evolution-safety) — _ struct{}, sealed interfaces, enforced construction
-7. [Copy Slices and Maps at Boundaries](#7-copy-slices-and-maps-at-boundaries) — inbound copies, outbound copies, when to skip
+6. [Write-Once Hooks](#6-write-once-hooks-for-feature-registration) — init-time feature registration with single-set enforcement
+7. [Incomparable Types](#7-preventing-equality-on-unsafe-types-incomparable) — zero-width embedding to prevent `==` on crypto/custom-equality types
+8. [API Evolution Safety](#8-api-evolution-safety) — _ struct{}, sealed interfaces, enforced construction
+9. [View Types](#9-view-types-for-immutable-data-at-boundaries) — read-only wrappers for internal state returned from getters
+10. [Copy Slices and Maps at Boundaries](#10-copy-slices-and-maps-at-boundaries) — inbound copies, outbound copies, when to skip
 
 ## 1. Struct Design
 
@@ -452,7 +455,23 @@ func GetUserName(svc *UserService, id string) string {
 }
 ```
 
-## 6. API Evolution Safety
+## 6. Write-Once Hooks for Feature Registration
+
+When build tags compose features into a binary, use a write-once `Hook[T]`
+type for init-time registration: `Set` stores a value via `sync.Once` and
+panics on double-set, `Get` returns the value. This is the one acceptable
+use of mutable package-level state — the type constrains it to write-once
+semantics. Raw `var` with unconstrained mutation remains prohibited.
+
+## 7. Preventing Equality on Unsafe Types
+
+Embed `type Incomparable [0]func()` to make a struct non-comparable at
+compile time. Zero-size, no runtime cost. Use for types where `==` would be
+semantically wrong (crypto keys requiring constant-time comparison, types
+with custom equality methods). Combine with `noCopy` when the type also
+should not be copied.
+
+## 8. API Evolution Safety
 
 ### Prevent Unkeyed Struct Literals
 Add `_ struct{}` as the last field in public structs:
@@ -498,7 +517,17 @@ func Connect(ctx context.Context, cfg *Config) (*Conn, error) {
 ```
 Prevents misconfiguration from zero-valued structs. Provide `Copy()` for safe modification after parsing.
 
-## 7. Copy Slices and Maps at Boundaries
+## 9. View Types for Immutable Data at Boundaries
+
+When a getter returns internal state that callers must not mutate, wrap the
+underlying slice/map in a view type with read-only accessors (`Len`, `At`,
+`Slice() []T` that clones on demand). The backing field is unexported, so
+callers cannot append, assign, or slice. Use when read frequency makes
+defensive copying on every `Get` call expensive. View types complement
+copying: use `slices.Clone` at simple boundaries, view types when profiling
+shows the copy matters.
+
+## 10. Copy Slices and Maps at Boundaries
 
 Slices and maps are reference types. When a struct stores a slice received
 from a caller, both sides share the backing array. The caller mutates it

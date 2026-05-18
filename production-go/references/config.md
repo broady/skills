@@ -4,15 +4,33 @@ What belongs in config, how to load it, how to validate it.
 
 ## Contents
 
+- [Config tiers](#config-tiers)
 - [What belongs in config](#what-belongs-in-config)
 - [Default approach](#default-approach)
 - [The Secret type](#the-secret-type)
 - [Validation](#validation)
+- [Init-time safety](#init-time-safety)
+- [Three-state configuration values](#three-state-configuration-values)
 - [When to deviate](#when-to-deviate)
 - [Config file vs env vars](#config-file-vs-env-vars)
 - [Per-environment variation](#per-environment-variation)
+- [Config Hot-Reload](#config-hot-reload)
 
 ---
+
+## Config tiers
+
+| Tier | Source | Mutability | Examples |
+|---|---|---|---|
+| Code defaults | Struct literals, `DefaultConfig()` | Immutable | Protocol timeouts, security bounds |
+| CLI flags / env / file | `LoadConfig()` at startup | Startup only | Addresses, credentials, pool sizes |
+| Runtime knobs | Control plane push, atomic swap | Hot | Feature flags, rate limits, debug toggles |
+
+Start with code defaults + startup config. Add runtime knobs only when you
+have a concrete operational reason (feature rollouts, incident response
+without redeploy). Runtime knobs use `atomic.Bool`, `atomic.Int64`, or
+`atomic.Pointer[T]` for lock-free reads. Group them in a struct with
+accessor methods rather than scattering package-level atomics.
 
 ## What belongs in config
 
@@ -158,6 +176,22 @@ func (c Config) Validate() error {
 ```
 
 ---
+
+## Init-time safety
+
+Environment variables must not be read during `init()`. The process may not
+have configured its environment yet, and `init()` ordering across packages is
+unpredictable. Guard against this by routing all env reads through a helper
+that records the call, and asserting at the top of `main()` that none were
+read during init. This catches ordering bugs at startup rather than in
+production.
+
+## Three-state configuration values
+
+A `bool` cannot distinguish "explicitly false" from "not configured." When
+the distinction matters (feature flags, optional overrides), use a three-state
+type with `IsSet() bool`, `Value() bool`, and `ValueOr(def bool) bool`. This
+prevents bugs where a zero-valued `false` silently overrides a default.
 
 ## When to deviate
 

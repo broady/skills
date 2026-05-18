@@ -7,10 +7,10 @@ Core thesis: most channel-based patterns are worse than the mutex or errgroup eq
 
 ## Contents
 
-1. [Goroutine Lifecycle Management](#1-goroutine-lifecycle-management) — errgroup, run.Group, safe.Go, safe.Collect, ctx.Done
+1. [Goroutine Lifecycle Management](#1-goroutine-lifecycle-management) — errgroup, run.Group, safe.Go, safe.Collect, goroutine gate, ctx.Done
 2. [Bounded Concurrency](#2-bounded-concurrency) — SetLimit, semaphore, worker pools
-3. [Channels vs Sync Primitives](#3-channels-vs-sync-primitives) — mutex, atomic, Locked[T], when channels are correct
-4. [Common Patterns Done Right](#4-common-patterns-done-right) — fan-out/fan-in, background workers, rate limiting, timeouts, cancellation causes
+3. [Channels vs Sync Primitives](#3-channels-vs-sync-primitives) — mutex, atomic, OnceValue, Locked[T], when channels are correct
+4. [Common Patterns Done Right](#4-common-patterns-done-right) — fan-out/fan-in, background workers, rate limiting, timeouts, cancellation causes, singleflight
 5. [Closure Capture Pitfalls](#5-closure-capture-pitfalls) — pointer capture, method values, concurrent handlers, named returns, slice headers
 6. [Anti-Patterns to Never Generate](#6-anti-patterns-to-never-generate) — fire-and-forget, naked go, busy spin
 7. [Leak Detection with goleak](#7-leak-detection-with-goleak) — TestMain, per-test, production detection
@@ -234,6 +234,71 @@ the one place where `recover` is justified. Application code never calls
 `recover` — the supervisor converts panics to per-item errors visible to the
 caller.
 
+### Goroutine gate — long-lived independent goroutines
+
+When goroutines are long-lived and independently managed (goroutine-per-connection
+servers), errgroup's "first error cancels all" semantic is wrong — one connection
+failing should not tear down all others. Use a gate: a mutex-guarded boolean that
+refuses new goroutines during shutdown, paired with a WaitGroup for the join point.
+
+The gate function is a goroutine supervisor (an approved `recover` site). A raw
+`go` is justified here because the gate itself provides the lifecycle: owner
+(Server), stop path (context cancellation), wait path (WaitGroup), and admission
+control (boolean gate).
+
+```go
+type Server struct {
+    mu      sync.Mutex
+    running bool
+    wg      sync.WaitGroup
+    ctx     context.Context
+    cancel  context.CancelFunc
+    logger  *slog.Logger
+}
+
+func (s *Server) startGoRoutine(name string, f func(context.Context) error) bool {
+    s.mu.Lock()
+    defer s.mu.Unlock()
+    if !s.running {
+        return false
+    }
+    s.wg.Add(1)
+    go func() {
+        defer s.wg.Done()
+        defer func() {
+            if r := recover(); r != nil {
+                s.logger.LogAttrs(s.ctx, slog.LevelError, "goroutine panicked",
+                    slog.String("name", name),
+                    slog.Any("panic", r),
+                    slog.String("stack", string(debug.Stack())),
+                )
+            }
+        }()
+        if err := f(s.ctx); err != nil && !errors.Is(err, context.Canceled) {
+            s.logger.LogAttrs(s.ctx, slog.LevelError, "goroutine failed",
+                slog.String("name", name),
+                slog.Any("err", err),
+            )
+        }
+    }()
+    return true
+}
+
+// Shutdown closes the gate, signals all goroutines, and waits for drain.
+func (s *Server) Shutdown() {
+    s.mu.Lock()
+    s.running = false
+    s.mu.Unlock()
+
+    s.cancel()  // signal all goroutines to stop
+    s.wg.Wait() // wait for all to drain
+}
+```
+
+The gate and shutdown must use the same mutex. Without it, a goroutine can
+start between setting `running = false` and calling `cancel()`, then miss
+the cancellation signal and leak.
+
 ---
 
 ## 2. Bounded Concurrency
@@ -339,6 +404,18 @@ type HealthCheck struct{ ready atomic.Bool }
 func (h *HealthCheck) SetReady()     { h.ready.Store(true) }
 func (h *HealthCheck) IsReady() bool { return h.ready.Load() }
 ```
+
+### sync.OnceValue — lazy initialization
+
+```go
+var defaultTemplates = sync.OnceValue(func() *template.Template {
+    return template.Must(template.ParseFS(embeddedTemplates, "templates/*.tmpl"))
+})
+```
+
+Use for expensive, deterministic one-time initialization with no I/O, no request
+context, and no cleanup requirement. Prefer constructor injection for resources
+that need lifecycle management (database pools, clients, workers).
 
 ### Compound mutations — the Get/Set gap
 
@@ -635,6 +712,43 @@ return s.enricher.Enrich(ctx, userID)
 Subsequent calls are no-ops. This means the most specific reason (the first
 failure) is preserved automatically.
 
+### Request deduplication with singleflight
+
+Use `golang.org/x/sync/singleflight` to collapse duplicate concurrent requests
+for the same key into a single execution. Prevents thundering herd on cache miss.
+
+```go
+type UserCache struct {
+    sf    singleflight.Group
+    store Store
+}
+
+func (c *UserCache) GetUser(ctx context.Context, id string) (*User, error) {
+    v, err, _ := c.sf.Do(id, func() (any, error) {
+        return c.store.LoadUser(ctx, id)
+    })
+    if err != nil {
+        return nil, err
+    }
+    return v.(*User), nil
+}
+```
+
+**Context footgun:** all coalesced callers share the first caller's context.
+If the first caller cancels, every waiting caller gets the cancellation error
+— even callers whose contexts are still valid. For short, idempotent reads
+this is acceptable. When it is not, detach the inner context:
+
+```go
+v, err, _ := c.sf.Do(id, func() (any, error) {
+    // WithoutCancel prevents one caller's cancellation from failing others.
+    // Add an explicit timeout — the parent's deadline is also detached.
+    ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+    defer cancel()
+    return c.store.LoadUser(ctx, id)
+})
+```
+
 ---
 
 ## 5. Closure Capture Pitfalls
@@ -796,84 +910,6 @@ snapshot or wait for `g.Wait()` before reading.
 
 ---
 
-## Additional Concurrency Patterns
-
-### Goroutine Gate Pattern (NATS)
-A single function that prevents goroutine leaks during shutdown:
-
-```go
-func (s *Server) startGoRoutine(f func()) bool {
-	s.grMu.Lock()
-	defer s.grMu.Unlock()
-	if !s.grRunning {
-		return false // shutdown in progress, refuse to start
-	}
-	s.grWG.Add(1)
-	go func() {
-		defer s.grWG.Done()
-		f()
-	}()
-	return true
-}
-```
-
-Use when: goroutine-per-connection servers bounded by MaxConn, where errgroup is wrong (goroutines are long-lived, independently managed). The WaitGroup provides the join point; the boolean gate prevents new goroutines during shutdown.
-
-### singleflight.Group
-Collapse duplicate concurrent requests for the same key into a single execution:
-
-```go
-var g singleflight.Group
-
-func GetUser(ctx context.Context, id string) (*User, error) {
-	v, err, _ := g.Do(id, func() (any, error) {
-		return db.LoadUser(ctx, id)
-	})
-	if err != nil {
-		return nil, err
-	}
-	return v.(*User), nil
-}
-```
-
-Use for: cache fill, expensive lookups where multiple goroutines request the same key simultaneously. Prevents thundering herd on cache miss.
-
-### sync.OnceValue for Lazy Initialization
-
-```go
-var parseDefaultTemplates = sync.OnceValue(func() *template.Template {
-	return template.Must(template.ParseFS(embeddedTemplates, "templates/*.tmpl"))
-})
-```
-
-Use for: expensive, deterministic one-time initialization with no I/O, no
-request context, and no cleanup requirement. Prefer constructor injection for
-resources such as database pools, clients, loggers, and workers.
-
-### Composable Multi-Semaphore (Syncthing)
-When you need to enforce multiple concurrent limits simultaneously:
-
-```go
-type MultiSemaphore []Semaphore
-
-func (ms MultiSemaphore) Take(ctx context.Context, n int) error {
-	for i, s := range ms {
-		if err := s.Take(ctx, n); err != nil {
-			// Release in reverse order on failure
-			for j := i - 1; j >= 0; j-- {
-				ms[j].Release(n)
-			}
-			return err
-		}
-	}
-	return nil
-}
-```
-
-Always acquire in forward order, release in reverse order — prevents deadlock. Use for: per-device + global limits, per-tenant + per-shard limits.
-
----
-
 ## 6. Anti-Patterns to Never Generate
 
 ```go
@@ -886,7 +922,9 @@ func init() { go backgroundRefresh() }             // NEVER: goroutine in init
 conn.onError = s.handleError                       // NEVER: method value on mutable receiver without documenting shared fields
 ```
 
-**Unbounded goroutines in a loop without a gate** — if shutdown sets a flag but new goroutines keep starting, they leak. Use the goroutine gate pattern.
+**Unbounded goroutines in a loop without a gate** — if shutdown sets a flag
+but new goroutines keep starting, they leak. Use the goroutine gate pattern
+(see [§1](#1-goroutine-lifecycle-management)).
 
 **select without done case** — every select in a goroutine loop must
 include `case <-ctx.Done()`. No exceptions.
@@ -1005,4 +1043,5 @@ Prefer `synctest` over mocking time interfaces — it works with the real
 | Need multiple subsystems? | `errgroup` (shared cancel) or `oklog/run.Group` (independent interrupt/cleanup) |
 | Need periodic background work? | `time.Ticker` + `select` on `ctx.Done()` |
 | Need contractual rate limiting? | `golang.org/x/time/rate.Limiter` (enforces "N per second" contracts; not a substitute for adaptive load shedding — see [resilience.md](resilience.md)) |
+| Need to deduplicate concurrent requests? | `golang.org/x/sync/singleflight` |
 | Need to detect goroutine leaks? | `go.uber.org/goleak` |

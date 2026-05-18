@@ -59,7 +59,7 @@ and agent-produced code. Tool-generated files (protobuf stubs, sqlc output,
 1. **No mutable globals.** Package-level `var` only for sentinels, compile-time checks, and immutable-by-construction values. Everything else flows through constructors. See [references/design.md](references/design.md).
 2. **Avoid `init()`.** Prefer explicit registry assembly. `init()` is acceptable only for deterministic metadata/factory registration with no I/O, goroutines, live dependencies, or config reads. See [references/design.md](references/design.md) and [references/plugin-systems.md](references/plugin-systems.md).
 3. **Errors: propagate with context, handle once at the boundary.** Use `%w` only when exposing the cause is stable contract; otherwise `%v` or map to domain error. Never log and return. See [references/errors.md](references/errors.md).
-4. **No naked goroutines.** A goroutine's maximum lifetime must be bounded by the scope that owns and waits for it. Start goroutines via `sync.WaitGroup.Go`, `errgroup`, `run.Group`, `safe.Collect`, or an explicit owner that can cancel and wait. Looping or blocking goroutines select on `ctx.Done()`. Raw `go` requires documented owner, stop path, wait path, and reason. For servers with goroutine-per-connection patterns bounded by MaxConn, a goroutine gate function (check state + WaitGroup.Add + go) is acceptable; see [references/concurrency-patterns.md](references/concurrency-patterns.md).
+4. **No naked goroutines.** A goroutine's maximum lifetime must be bounded by the scope that owns and waits for it. Start goroutines via `sync.WaitGroup.Go`, `errgroup`, `run.Group`, `safe.Collect`, or an explicit owner that can cancel and wait. Looping or blocking goroutines select on `ctx.Done()`. Raw `go` requires documented owner, stop path, wait path, and reason. For servers with goroutine-per-connection patterns bounded by MaxConn, a goroutine gate function (check state + WaitGroup.Add + go) is acceptable; see [references/concurrency.md](references/concurrency.md).
 5. **Bounded concurrency.** `errgroup.SetLimit(n)` or `semaphore.Weighted`. Never unbounded goroutines in a loop.
 6. **Graceful shutdown is mandatory and phased.** Drain → Hammer → Terminate. See [references/server/scaffold.md](references/server/scaffold.md).
 7. **Bound every resource explicitly.** HTTP servers/clients: explicit timeouts. DB pools: `MaxConns`, lifetime, idle time. Retries: max attempts + backoff. Queues: explicit capacity. Shutdown: deadline on drain.
@@ -193,10 +193,10 @@ Load a reference file only when the task involves its domain. Skip unrelated one
 | File | Covers | Load when... |
 |---|---|---|
 | [references/backpressure.md](references/backpressure.md) | Tiered flow control, memory limiters, queue bounds, per-tenant rate limiting, slow consumer handling | Connecting pipeline stages with channels/queues, adding rate limiting, handling slow consumers |
-| [references/concurrency.md](references/concurrency.md) | Structured concurrency model, goroutine lifecycle, bounded concurrency, sync vs channels, Locked[T] | Adding goroutines, protecting shared state with mutexes, choosing between channels and sync primitives |
-| [references/concurrency-patterns.md](references/concurrency-patterns.md) | Fan-out/fan-in, background workers, closure pitfalls, cancellation causes, goroutine gate, anti-patterns, goleak, synctest | Writing loops that spawn goroutines, reviewing concurrent code, testing time-dependent code, rate limiting, singleflight |
+| [references/concurrency.md](references/concurrency.md) | Structured concurrency model, goroutine lifecycle, bounded concurrency, goroutine gate, sync vs channels, Locked[T] | Adding goroutines, protecting shared state with mutexes, choosing between channels and sync primitives |
+| [references/concurrency-patterns.md](references/concurrency-patterns.md) | Fan-out/fan-in, background workers, closure pitfalls, cancellation causes, anti-patterns, goleak, synctest | Writing loops that spawn goroutines, reviewing concurrent code, testing time-dependent code, rate limiting, singleflight |
 | [references/errors.md](references/errors.md) | Error types, wrapping, sentinels, boundary mapping, panic/recover | Adding/modifying functions that return errors, wrapping errors from dependencies, mapping errors to HTTP/gRPC status codes |
-| [references/config.md](references/config.md) | What belongs in config vs code, Secret type, validation, LoadConfig pattern, graduation criteria, env-only/file/CLI deviations | Config loading, adding config values, deciding what should be configurable |
+| [references/config.md](references/config.md) | What belongs in config vs code, Secret type, validation, LoadConfig pattern, graduation criteria, env-only/file/CLI deviations, config hot-reload basics | Config loading, adding config values, deciding what should be configurable, basic hot-reload patterns |
 | [references/controller-loops.md](references/controller-loops.md) | Informer-queue-worker pattern, reconciliation, work queue semantics, bounded retry, cache sync | Writing Kubernetes-style controllers, reconciliation loops, event-driven processing |
 | [references/data-integrity.md](references/data-integrity.md) | Atomic writes, verify-after-write, conflict detection, filesystem safety, crash recovery | Writing data to disk safely, handling concurrent file access, backup/sync operations |
 | [references/design.md](references/design.md) | Packages, DI, interfaces, API design, config structs, builders | Adding a new package, writing a constructor, designing a public API, choosing between config structs and options |
@@ -204,9 +204,10 @@ Load a reference file only when the task involves its domain. Skip unrelated one
 | [references/testing.md](references/testing.md) | goleak, property testing, integration tests, benchmarks, fakes | Writing tests (especially for concurrent or integration code), adding benchmarks, choosing test doubles |
 | [references/lifecycle.md](references/lifecycle.md) | Process lifecycle orchestration, run.Group, supervision trees, config reload, shutdown phasing | Wiring multiple long-running components together, adding config hot-reload, changing shutdown order |
 | [references/linting.md](references/linting.md) | golangci-lint config, linter rationale, CI setup | Setting up or modifying golangci-lint config, adding linters to CI |
-| [references/performance.md](references/performance.md) | Allocation reduction, profiling, benchmarking | Optimizing a function identified as slow by profiling, reducing allocations, writing benchmarks |
+| [references/performance.md](references/performance.md) | Profiling workflow, escape analysis, allocation reduction, GC tuning (GOGC/GOMEMLIMIT), benchmarking | Optimizing a function identified as slow by profiling, reducing allocations, tuning GC for containers, writing benchmarks |
 | [references/plugin-systems.md](references/plugin-systems.md) | Module lifecycle, explicit registries, sealed interfaces, two-phase commit, config-driven provisioning | Adding a plugin/extension point, writing a registry, managing component provision and teardown |
 | [references/project-layout.md](references/project-layout.md) | Directory structure, dependency direction | Scaffolding a new service, adding a new package to an existing service, deciding where code lives |
+| [references/invariant-checks.md](references/invariant-checks.md) | Runtime safety checks gated by environment, dev-only panics | Adding debug assertions, catching programmer errors during development, validating internal assumptions at runtime |
 
 ### Server
 
@@ -222,10 +223,9 @@ Load a reference file only when the task involves its domain. Skip unrelated one
 
 | File | Covers | Load when... |
 |---|---|---|
-| [references/database/transactions.md](references/database/transactions.md) | Explicit tx passing, Querier interface, WithTx helper, nested service calls | Writing or reviewing code that uses SQL transactions |
+| [references/database/transactions.md](references/database/transactions.md) | Explicit tx passing, Querier interface, WithTx helper, nested service calls, connection safety (pgx) | Writing or reviewing code that uses SQL transactions, pgx connection pool safety |
 | [references/database/cursor-iteration.md](references/database/cursor-iteration.md) | Keyset pagination, batched processing of large result sets | Iterating over large tables or implementing paginated queries |
 | [references/database/async-brokers.md](references/database/async-brokers.md) | External broker consumers, retry with backoff, at-least-once delivery, in-process queues | Implementing async processing, background jobs, or message handling |
-| [references/database/invariant-checks.md](references/database/invariant-checks.md) | Runtime safety checks gated by environment, dev-only panics | Adding safety checks that should only fire in dev/test, validating internal assumptions at runtime |
 
 ### Resilience & Flow Control
 

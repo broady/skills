@@ -41,7 +41,11 @@ type ReadinessChecker interface {
 	Ready(ctx context.Context) error
 }
 
-// Example:
+// Example — implement on any dependency (e.g., OrderService, UserStore):
+//
+// func (s *OrderService) Name() string   { return "orders" }
+// func (s *OrderService) Ready(ctx context.Context) error { return s.store.PingContext(ctx) }
+//
 // func (s *UserStore) Name() string { return "database" }
 // func (s *UserStore) Ready(ctx context.Context) error { return s.db.PingContext(ctx) }
 ```

@@ -38,11 +38,13 @@ type ServeCmd struct{}
 // DB pool lifetimes, and shutdown deadlines are engineering decisions -- they
 // live in code as constants. See references/config.md for graduation criteria.
 type Config struct {
-	HTTPAddr    string
-	GRPCAddr    string
-	DatabaseURL Secret
-	DBMaxConns  int32
-	LogLevel    slog.Level
+	HTTPAddr          string
+	GRPCAddr          string
+	DatabaseURL       Secret
+	DBMaxConns        int32
+	LogLevel          slog.Level
+	EnableReflection  bool          // gRPC reflection; see connect-grpc.md
+	ShutdownTimeout   time.Duration // hard deadline for graceful shutdown
 }
 
 func (c Config) Validate() error {
@@ -151,11 +153,13 @@ func loadConfig(configPath, logLevelOverride string) (*Config, error) {
 		return nil, err
 	}
 	cfg := &Config{
-		HTTPAddr:    envString("HTTP_ADDR", ":8080"),
-		GRPCAddr:    envString("GRPC_ADDR", ":8081"),
-		DatabaseURL: dbURL,
-		DBMaxConns:  dbMaxConns,
-		LogLevel:    logLevel,
+		HTTPAddr:         envString("HTTP_ADDR", ":8080"),
+		GRPCAddr:         envString("GRPC_ADDR", ":8081"),
+		DatabaseURL:      dbURL,
+		DBMaxConns:       dbMaxConns,
+		LogLevel:         logLevel,
+		EnableReflection: envString("ENABLE_REFLECTION", "false") == "true",
+		ShutdownTimeout:  15 * time.Second,
 	}
 	return cfg, nil
 }
@@ -255,10 +259,7 @@ func runServer(cfg *Config, logger *slog.Logger) error {
 			}
 			return nil
 		}, func(error) {
-			// Shutdown timeout is an engineering decision: 15s matches most
-			// orchestrator drain windows. Graduate to config if you need to
-			// vary it per deployment (see references/config.md).
-			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
 			defer cancel()
 			if err := httpSrv.Shutdown(ctx); err != nil {
 				logger.LogAttrs(context.Background(), slog.LevelWarn,
@@ -311,24 +312,9 @@ func connectDB(ctx context.Context, cfg *Config) (*sql.DB, error) {
 Signal -> **Drain** (HTTP `Shutdown` drains in-flight, workers finish current item) -> **Hammer** (force-cancel anything still running after the shutdown deadline) -> **Terminate** (close DB, flush telemetry) -> exit 0.
 
 The hammer phase prevents the production bug where one hung connection blocks
-shutdown forever. Implement it as a context with a hard deadline:
-
-```go
-// In the interrupt func of the HTTP actor:
-func(error) {
-    // Phase 1: Drain — give in-flight requests time to complete.
-    ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-    defer cancel()
-    if err := httpSrv.Shutdown(ctx); err != nil {
-        // Phase 2: Hammer — drain timed out, force close.
-        logger.LogAttrs(context.Background(), slog.LevelWarn,
-            "graceful shutdown timed out, forcing close",
-            slog.Any("err", err),
-        )
-        _ = httpSrv.Close() // best effort after graceful shutdown timeout
-    }
-}
-```
+shutdown forever. The interrupt func above implements this: `Shutdown(ctx)`
+attempts drain within the deadline; if it times out, `Close()` force-kills
+remaining connections.
 
 For servers with long-lived connections (WebSocket, SSE, git smart HTTP), the
 hammer phase is essential. Without it, a single idle connection holds the process

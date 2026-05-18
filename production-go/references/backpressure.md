@@ -176,12 +176,19 @@ func (l *PerSourceLimiter) Allow(source string) bool {
 }
 ```
 
+**Limitation:** This implementation has no eviction — once the map reaches
+`maxSrcs`, all new unknown sources are refused permanently. For long-running
+services with rotating source IPs, add an LRU or probabilistic LRU to evict
+stale entries. Cache eviction is a deep topic; use a proven library rather
+than hand-rolling one.
+
 Always return `Retry-After` header on 429 responses.
 
 ### Runtime-reloadable limits (Loki)
 
 Decouple limit values from limiter lifecycle. Swap overrides atomically on
-config reload without restarting.
+config reload without restarting. See [config.md](config.md) for the broader
+hot-reload pattern and per-tenant fallback-to-defaults approach.
 
 ```go
 type TenantLimits struct {

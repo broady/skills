@@ -269,24 +269,14 @@ func slowStartBatch(ctx context.Context, count int, initialBatchSize int, fn fun
     remaining := count
     successes := 0
     for batchSize := min(remaining, initialBatchSize); batchSize > 0; batchSize = min(2*batchSize, remaining) {
-        items := make([]int, batchSize)
-        results := safe.Collect(ctx, batchSize, items, func(ctx context.Context, _ int) (struct{}, error) {
-            return struct{}{}, fn(ctx)
-        })
-
-        var firstErr error
-        for _, r := range results {
-            if r.Err != nil {
-                if firstErr == nil {
-                    firstErr = r.Err
-                }
-            } else {
-                successes++
-            }
+        g, gctx := errgroup.WithContext(ctx)
+        for range batchSize {
+            g.Go(func() error { return fn(gctx) })
         }
-        if firstErr != nil {
-            return successes, firstErr
+        if err := g.Wait(); err != nil {
+            return successes, err
         }
+        successes += batchSize
         remaining -= batchSize
     }
     return successes, nil

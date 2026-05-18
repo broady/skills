@@ -56,7 +56,7 @@ These prevent production incidents. Apply unconditionally to all hand-written
 and agent-produced code. Tool-generated files (protobuf stubs, sqlc output,
 `go generate` artifacts) are exempt; do not modify them.
 
-1. **No mutable globals.** Package-level `var` only for sentinels, compile-time checks, immutable-by-construction values, and write-once hooks (set exactly once during init, panic on double-set). Everything else flows through constructors. See [references/design.md](references/design.md) and [references/design-idioms.md](references/design-idioms.md).
+1. **No mutable globals.** Package-level `var` only for sentinels, compile-time checks, immutable-by-construction values, and write-once hooks (set exactly once during init, panic on double-set). Sentinel errors created with `errors.New` are allowed; do not flag them unless code reassigns them or exposes a meaningful mutation path. Everything else flows through constructors. See [references/design.md](references/design.md) and [references/design-idioms.md](references/design-idioms.md).
 2. **Avoid `init()`.** Prefer explicit registry assembly. `init()` is acceptable only for deterministic metadata/factory registration with no I/O, goroutines, live dependencies, or config reads. **Never read environment variables or config during `init()`** — values may not be set yet, and ordering is unpredictable. Guard against this with an early-main assertion (see [references/config.md](references/config.md)). See [references/design.md](references/design.md) and [references/plugin-systems.md](references/plugin-systems.md).
 3. **Errors: propagate with context, handle once at the boundary.** Use `%w` only when exposing the cause is stable contract; otherwise `%v` or map to domain error. Never log and return. See [references/errors.md](references/errors.md).
 4. **No naked goroutines.** A goroutine's maximum lifetime must be bounded by the scope that owns and waits for it. Start goroutines via `sync.WaitGroup.Go`, `errgroup`, `run.Group`, `safe.Collect`, or an explicit owner that can cancel and wait. Looping or blocking goroutines select on `ctx.Done()`. Raw `go` requires documented owner, stop path, wait path, and reason. For servers with goroutine-per-connection patterns bounded by MaxConn, a goroutine gate function (check state + WaitGroup.Add + go) is acceptable; see [references/concurrency.md](references/concurrency.md).
@@ -118,7 +118,7 @@ and libraries.
 - Unmanaged goroutines or unbounded concurrency
 - Buffered channels with capacity > 1 and no backpressure-contract comment (document: drop policy, priority separation, and what happens when full)
 - Ignored/swallowed errors or log-and-return
-- Mutable package globals or unsafe `init()`
+- Mutable package globals or unsafe `init()` (sentinel errors are allowed)
 - `http.DefaultClient`, `http.Get()`, or servers without explicit timeouts
 - Hardcoded operational parameters
 - Public API with ambiguous same-type arguments or naked booleans
@@ -177,6 +177,38 @@ and libraries.
 | Manage plugin/extension lifecycle | Provision → Validate → Start → Stop → Cleanup. Cleanup on partial failure — see [references/plugin-systems.md](references/plugin-systems.md) |
 | Implement multi-tenant isolation | Tenant ID in context (never struct). Per-tenant limits via runtime-reloadable config — see [references/config.md](references/config.md) |
 
+## Review Mode
+
+When reviewing or auditing Go code (as opposed to writing it), read
+[references/review.md](references/review.md) first — it calibrates severity,
+confidence, false-positive checks, and wording. Then read domain-specific
+references based on what the code under review does:
+
+- Code spawns goroutines or uses channels → read [references/concurrency.md](references/concurrency.md)
+- Code handles or maps errors at boundaries → read [references/errors.md](references/errors.md)
+- Code sets up servers, shutdown, or middleware → read [references/server/scaffold.md](references/server/scaffold.md)
+- Code accesses a database or processes async work → read [references/database/transactions.md](references/database/transactions.md)
+
+Apply the same checklist as authoring, but classify each finding with both
+**severity** (Critical/High/Medium/Low) and **confidence** (Confirmed/Partial/
+Design hazard) per the review reference. Recommend specific patterns from the
+references and [packages/safe](packages/safe) as fixes — don't just describe
+the problem.
+
+### Diff Review vs Full-Repo Audit
+
+**Diff review** (default): single-pass review of a PR or recent changes. Use
+the checklist above with review.md calibration. Appropriate for code review in
+normal development flow.
+
+**Full-repo audit**: structured multi-pass review of an entire codebase. Read
+[references/audit.md](references/audit.md) — it defines a fan-out workflow:
+survey the repo into domain-scoped review units, sweep each unit in parallel
+subagents with the relevant domain references, then verify each finding in
+parallel subagents (confirm/refute + reproducer tests), and synthesize into a
+prioritized summary. Use for: new team inheriting a codebase, pre-production
+readiness, or periodic health checks.
+
 ## Existing Codebases
 
 Apply safety invariants immediately. Preserve existing framework choices unless
@@ -193,10 +225,13 @@ safety not cleverness, config structs over functional options, Kong for CLIs,
 
 ## References
 
-Load a reference file only when the task involves its domain. Skip unrelated ones.
+Load a reference file when the task involves its domain — whether writing,
+reviewing, or debugging code in that area. Skip unrelated ones.
 
 | File | Covers | Load when... |
 |---|---|---|
+| [references/review.md](references/review.md) | Finding confidence, severity calibration, false-positive checks, review wording | **Always** read first when reviewing or auditing Go code, triaging suspected issues, or validating third-party findings |
+| [references/audit.md](references/audit.md) | Multi-pass audit workflow: survey → domain sweeps (parallel subagents) → per-finding verification (parallel subagents + reproducers) → prioritized synthesis | Full-repo audit of an existing codebase (not diff reviews) |
 | [references/backpressure.md](references/backpressure.md) | Tiered flow control, memory limiters, queue bounds, per-tenant rate limiting, slow consumer handling | Connecting pipeline stages with channels/queues, adding rate limiting, handling slow consumers |
 | [references/concurrency.md](references/concurrency.md) | Structured concurrency model, goroutine lifecycle, bounded concurrency, goroutine gate, sync vs channels, Locked[T] | Adding goroutines, protecting shared state with mutexes, choosing between channels and sync primitives |
 | [references/concurrency-patterns.md](references/concurrency-patterns.md) | Fan-out/fan-in, background workers, closure pitfalls, cancellation causes, anti-patterns, goleak, synctest | Writing loops that spawn goroutines, reviewing concurrent code, testing time-dependent code, rate limiting, singleflight |

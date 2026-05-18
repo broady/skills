@@ -59,36 +59,30 @@ func TestCollectBoundsConcurrency(t *testing.T) {
 	}
 }
 
-func TestCollectRecoversPanic(t *testing.T) {
-	items := []string{"ok", "panic", "ok"}
+// TestCollectPanicCrashesProcess documents that panics are NOT recovered.
+// A panic in fn propagates and crashes the process. We cannot test the crash
+// itself without subprocess execution; this test verifies normal error flow
+// and documents the intentional absence of panic recovery.
+func TestCollectPanicCrashesProcess(t *testing.T) {
+	// Verify that normal errors work correctly — panics are left to crash.
+	errBad := errors.New("bad item")
+	items := []int{1, 2, 3}
 
-	results := Collect(context.Background(), 3, items, func(_ context.Context, s string) (string, error) {
-		if s == "panic" {
-			panic("boom")
+	results := Collect(context.Background(), 3, items, func(_ context.Context, n int) (int, error) {
+		if n == 2 {
+			return 0, errBad
 		}
-		return s + "!", nil
+		return n * 10, nil
 	})
 
-	// Item 0: success.
-	if results[0].Err != nil || results[0].Val != "ok!" {
-		t.Errorf("results[0] = %+v, want Val=ok! Err=nil", results[0])
+	if results[0].Val != 10 || results[0].Err != nil {
+		t.Errorf("results[0] = %+v", results[0])
 	}
-
-	// Item 1: panic recovered.
-	var pe *PanicError
-	if !errors.As(results[1].Err, &pe) {
-		t.Fatalf("results[1].Err = %T %v, want *PanicError", results[1].Err, results[1].Err)
+	if !errors.Is(results[1].Err, errBad) {
+		t.Errorf("results[1].Err = %v, want %v", results[1].Err, errBad)
 	}
-	if pe.Value != "boom" {
-		t.Errorf("PanicError.Value = %v, want boom", pe.Value)
-	}
-	if len(pe.Stack) == 0 {
-		t.Error("PanicError.Stack is empty")
-	}
-
-	// Item 2: success (not affected by sibling panic).
-	if results[2].Err != nil || results[2].Val != "ok!" {
-		t.Errorf("results[2] = %+v, want Val=ok! Err=nil", results[2])
+	if results[2].Val != 30 || results[2].Err != nil {
+		t.Errorf("results[2] = %+v", results[2])
 	}
 }
 

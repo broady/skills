@@ -420,6 +420,38 @@ to the lexical function, not the test resource lifecycle.
 Returns a context canceled when the test ends. Use it instead of manual
 `context.WithCancel` boilerplate: `ctx := t.Context()`.
 
+**Note:** Subtest contexts are independent of the parent test's context.
+`t.Context()` in a subtest is not derived from the parent's `t.Context()`.
+
+### Parallel subtests with scoped teardown (TeardownParallel)
+
+When parallel subtests share a resource that needs cleanup after all subtests
+finish, wrap them in an intermediate `t.Run` group. The outer `Run` does not
+return until all parallel subtests inside it complete:
+
+```go
+func TestDatabase(t *testing.T) {
+    db := setupTestDB(t) // lives for the duration of all subtests
+
+    t.Run("group", func(t *testing.T) {
+        t.Run("Create", func(t *testing.T) {
+            t.Parallel()
+            // uses db
+        })
+        t.Run("Read", func(t *testing.T) {
+            t.Parallel()
+            // uses db
+        })
+    })
+    // "group" returns here — all parallel subtests are done.
+    // Safe to assert final DB state or clean up.
+}
+```
+
+This is the stdlib's canonical pattern (`testing.go` documents it explicitly).
+Without the intermediate group, the parent test may exit (and run `t.Cleanup`)
+while parallel subtests are still running.
+
 ### Over-parameterize for testability
 
 If a struct is hard to test, it needs more parameters, not fewer. Inject time,

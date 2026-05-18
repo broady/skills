@@ -278,17 +278,16 @@ func (s *Server) startGoRoutine(name string, f func(context.Context) error) bool
     if !s.running {
         return false
     }
-    s.wg.Add(1)
-    go func() {
-        defer s.wg.Done()
-        // No recover. A panic crashes the process. The orchestrator restarts it.
+    // wg.Go calls Add(1) synchronously, then launches the goroutine.
+    // The Add happens under our mutex, preserving the gate invariant.
+    s.wg.Go(func() {
         if err := f(s.ctx); err != nil && !errors.Is(err, context.Canceled) {
             s.logger.LogAttrs(s.ctx, slog.LevelError, "goroutine failed",
                 slog.String("name", name),
                 slog.Any("err", err),
             )
         }
-    }()
+    })
     return true
 }
 

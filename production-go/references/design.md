@@ -882,6 +882,52 @@ func GetUserName(svc *UserService, id string) string {
 }
 ```
 
+## API Evolution Safety
+
+### Prevent Unkeyed Struct Literals
+Add `_ struct{}` as the last field in public structs:
+```go
+type Settings struct {
+	ID        component.ID
+	BuildInfo BuildInfo
+	_         struct{} // prevent unkeyed literal initialization
+}
+```
+This forces callers to use field names, making it safe to add new fields without breaking existing code.
+
+### Sealed Interfaces
+Add an unexported method to prevent external implementations:
+```go
+type Factory interface {
+	CreateDefaultConfig() Config
+	unexportedFactory() // prevents external implementations
+}
+```
+All instances must come through official constructors. Enables safe API evolution without breaking external code. Use for: factory interfaces in libraries where you need to add methods over time.
+
+### Config Must Come From ParseConfig
+For library types with complex defaults, enforce construction through the parser:
+```go
+type Config struct {
+	// ... fields ...
+	createdByParseConfig bool
+}
+
+func ParseConfig(connString string) (*Config, error) {
+	cfg := &Config{createdByParseConfig: true}
+	// ... parse and set defaults ...
+	return cfg, nil
+}
+
+func Connect(ctx context.Context, cfg *Config) (*Conn, error) {
+	if !cfg.createdByParseConfig {
+		panic("config must be created by ParseConfig")
+	}
+	// ...
+}
+```
+Prevents misconfiguration from zero-valued structs. Provide `Copy()` for safe modification after parsing.
+
 ## 9. Copy Slices and Maps at Boundaries
 
 Slices and maps are reference types. When a struct stores a slice received

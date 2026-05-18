@@ -796,6 +796,84 @@ snapshot or wait for `g.Wait()` before reading.
 
 ---
 
+## Additional Concurrency Patterns
+
+### Goroutine Gate Pattern (NATS)
+A single function that prevents goroutine leaks during shutdown:
+
+```go
+func (s *Server) startGoRoutine(f func()) bool {
+	s.grMu.Lock()
+	defer s.grMu.Unlock()
+	if !s.grRunning {
+		return false // shutdown in progress, refuse to start
+	}
+	s.grWG.Add(1)
+	go func() {
+		defer s.grWG.Done()
+		f()
+	}()
+	return true
+}
+```
+
+Use when: goroutine-per-connection servers bounded by MaxConn, where errgroup is wrong (goroutines are long-lived, independently managed). The WaitGroup provides the join point; the boolean gate prevents new goroutines during shutdown.
+
+### singleflight.Group
+Collapse duplicate concurrent requests for the same key into a single execution:
+
+```go
+var g singleflight.Group
+
+func GetUser(ctx context.Context, id string) (*User, error) {
+	v, err, _ := g.Do(id, func() (any, error) {
+		return db.LoadUser(ctx, id)
+	})
+	if err != nil {
+		return nil, err
+	}
+	return v.(*User), nil
+}
+```
+
+Use for: cache fill, expensive lookups where multiple goroutines request the same key simultaneously. Prevents thundering herd on cache miss.
+
+### sync.OnceValue for Lazy Initialization
+
+```go
+var parseDefaultTemplates = sync.OnceValue(func() *template.Template {
+	return template.Must(template.ParseFS(embeddedTemplates, "templates/*.tmpl"))
+})
+```
+
+Use for: expensive, deterministic one-time initialization with no I/O, no
+request context, and no cleanup requirement. Prefer constructor injection for
+resources such as database pools, clients, loggers, and workers.
+
+### Composable Multi-Semaphore (Syncthing)
+When you need to enforce multiple concurrent limits simultaneously:
+
+```go
+type MultiSemaphore []Semaphore
+
+func (ms MultiSemaphore) Take(ctx context.Context, n int) error {
+	for i, s := range ms {
+		if err := s.Take(ctx, n); err != nil {
+			// Release in reverse order on failure
+			for j := i - 1; j >= 0; j-- {
+				ms[j].Release(n)
+			}
+			return err
+		}
+	}
+	return nil
+}
+```
+
+Always acquire in forward order, release in reverse order — prevents deadlock. Use for: per-device + global limits, per-tenant + per-shard limits.
+
+---
+
 ## 6. Anti-Patterns to Never Generate
 
 ```go
@@ -807,6 +885,8 @@ ch := make(chan int); ch <- 42                      // DEADLOCK: unbuffered, no 
 func init() { go backgroundRefresh() }             // NEVER: goroutine in init
 conn.onError = s.handleError                       // NEVER: method value on mutable receiver without documenting shared fields
 ```
+
+**Unbounded goroutines in a loop without a gate** — if shutdown sets a flag but new goroutines keep starting, they leak. Use the goroutine gate pattern.
 
 **select without done case** — every select in a goroutine loop must
 include `case <-ctx.Done()`. No exceptions.

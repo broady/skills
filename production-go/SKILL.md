@@ -2,8 +2,9 @@
 name: production-go
 description: >
   Strict production Go standards for agent-produced or reviewed Go code. Trigger for
-  almost all non-trivial Go work: services, libraries, CLIs, concurrency, error
-  handling, HTTP/gRPC, DB access, config, linting, and observability. Also trigger
+  almost all non-trivial production or deployed Go work: services, libraries, CLIs,
+  concurrency, error handling, HTTP/gRPC, DB access, config, linting, and
+  observability. Also trigger
   when the user mentions goroutines, context, slog, errgroup, circuit breaker, retry,
   health checks, graceful shutdown, golangci-lint, transaction management, or asks to
   review Go code for production safety. For toy examples, apply only the safety rules
@@ -29,6 +30,15 @@ runtime checks. Bounded everything. Correctness at boundaries.
    a planned migration. Do not introduce a second logger, router, CLI framework,
    RPC stack, or DI style in one-off changes.
 4. **Load only the reference file needed** for the current task (see router below).
+
+## Scope Calibration
+
+| Task | Apply |
+|---|---|
+| Script / prototype | Safety invariants 1-4 only (globals, errors, goroutines, bounds). Skip lifecycle, config, observability |
+| Internal library | All safety invariants. Tier 2 defaults. Skip server/scaffold |
+| Service (internal) | Full skill. Load relevant references |
+| Service (public API) | Full skill + boundary contracts, API evolution (design-idioms.md) |
 
 ## The Five Questions
 

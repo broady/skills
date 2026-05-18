@@ -102,7 +102,7 @@ func TestMain(m *testing.M) {
 
 For deterministic time testing (`synctest`), per-test leak verification with
 errgroup, and the relationship between goleak and structured concurrency, see
-[concurrency.md](concurrency.md#7-leak-detection-with-goleak).
+[concurrency-patterns.md](concurrency-patterns.md#5-leak-detection-with-goleak).
 
 ---
 

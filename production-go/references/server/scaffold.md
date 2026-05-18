@@ -88,7 +88,6 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"os/signal"
 	"strconv"
 	"strings"
 	"syscall"
@@ -271,17 +270,9 @@ func runServer(cfg *Config, logger *slog.Logger) error {
 		})
 	}
 
-	// Actor: Signal handler
-	{
-		ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
-		g.Add(func() error {
-			<-ctx.Done()
-			logger.LogAttrs(context.Background(), slog.LevelInfo, "received shutdown signal")
-			return nil
-		}, func(error) {
-			cancel()
-		})
-	}
+	// Actor: Signal handler — run.SignalHandler returns a ready-made
+	// (execute, interrupt) pair; no manual signal.NotifyContext needed.
+	g.Add(run.SignalHandler(context.Background(), syscall.SIGTERM, syscall.SIGINT))
 
 	// Actor: Background worker (uncomment as needed)
 	// ctx, cancel := context.WithCancel(context.Background())

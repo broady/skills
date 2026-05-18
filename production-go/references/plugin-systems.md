@@ -6,7 +6,7 @@ Collector, containerd, and OpenTofu.
 ## Contents
 
 1. [Module Lifecycle](#1-module-lifecycle)
-2. [Plugin Registration via init()](#2-plugin-registration-via-init)
+2. [Plugin Registration](#2-plugin-registration)
 3. [Sealed Factory Interfaces](#3-sealed-factory-interfaces)
 4. [API Evolution Safety](#4-api-evolution-safety)
 5. [Two-Phase Commit for System Resources](#5-two-phase-commit-for-system-resources)
@@ -45,9 +45,9 @@ type Component interface {
 }
 ```
 
-### Caddy lifecycle interfaces
+### Optional lifecycle interfaces
 
-Caddy splits the lifecycle into optional interfaces:
+Some hosts split lifecycle hooks into optional interfaces:
 
 ```go
 type Provisioner interface { Provision(Context) error }
@@ -60,53 +60,82 @@ called, regardless of whether it succeeded.
 
 ---
 
-## 2. Plugin Registration via init()
+## 2. Plugin Registration
 
-The justified exception to "no init()". Plugin registration is write-once,
-deterministic, has no I/O, and must happen before `main()`.
+Prefer explicit registry assembly. It keeps ownership visible, avoids hidden
+import-time mutation, and lets tests build isolated registries.
 
-### Global registry
+### Explicit registry assembly
 
 ```go
-var (
-    modulesMu sync.RWMutex
-    modules   = make(map[string]ModuleInfo)
-)
+type Registry struct {
+    modules map[string]ModuleInfo
+}
 
-func RegisterModule(instance Module) {
-    info := instance.CaddyModule()
+func NewRegistry() *Registry {
+    return &Registry{modules: make(map[string]ModuleInfo)}
+}
+
+func (r *Registry) RegisterModule(instance Module) {
+    info := instance.ModuleInfo()
     if info.ID == "" {
         panic("module ID missing")
     }
-    modulesMu.Lock()
-    defer modulesMu.Unlock()
-    if _, ok := modules[string(info.ID)]; ok {
+    if _, ok := r.modules[string(info.ID)]; ok {
         panic(fmt.Sprintf("module already registered: %s", info.ID))
     }
-    modules[string(info.ID)] = info
+    r.modules[string(info.ID)] = info
+}
+
+func RegisterStandardModules(r *Registry) {
+    auth.Register(r)
+    cache.Register(r)
+    logging.Register(r)
 }
 ```
 
-### init() in plugin packages
+Each plugin package exports an explicit registration function:
 
 ```go
-func init() {
-    caddy.RegisterModule(MyPlugin{})
+func Register(r *Registry) {
+    r.RegisterModule(MyPlugin{})
 }
 
 type MyPlugin struct{}
 
-func (MyPlugin) CaddyModule() caddy.ModuleInfo {
-    return caddy.ModuleInfo{
+func (MyPlugin) ModuleInfo() ModuleInfo {
+    return ModuleInfo{
         ID:  "http.handlers.myplugin",
-        New: func() caddy.Module { return new(MyPlugin) },
+        New: func() Module { return new(MyPlugin) },
     }
 }
 ```
 
-### Composition via blank imports
+### Rare init() self-registration exception
 
-A single `imports.go` controls which plugins are compiled in:
+Avoid `init()` for plugin registration in application and internal platform
+code. It is hidden inversion of control: importing a package mutates global
+process state.
+
+Allow `init()` self-registration only when supporting an established
+third-party plugin ecosystem whose documented composition model is blank
+imports. Even then, `init()` may only register immutable metadata or factory
+descriptors. It must not read config, perform I/O, start goroutines, create
+clients, open files, log, or construct live plugin instances.
+
+```go
+func init() {
+    RegisterModuleInfo(ModuleInfo{
+        ID:  "http.handlers.myplugin",
+        New: func() Module { return new(MyPlugin) },
+    })
+}
+```
+
+### Blank-import composition
+
+Use only for ecosystem compatibility. A single `imports.go` controls which
+plugins are compiled in:
 
 ```go
 package standard
@@ -118,8 +147,8 @@ import (
 )
 ```
 
-The main binary imports this package. Adding or removing a plugin is a
-one-line change. Caddy, OTel Collector, and containerd all use this pattern.
+The main binary imports this package. Adding or removing a plugin is then a
+build-composition change, not runtime configuration.
 
 ---
 
@@ -304,8 +333,9 @@ cannot match with `errors.Is`.
 
 | Question | Answer |
 |---|---|
-| How do I register plugins? | `init()` calls `RegisterModule()`. Panics on duplicates. |
-| How do I compose a default build? | Blank imports in a single `imports.go` file. |
+| How do I register plugins? | Prefer explicit `Register(r *Registry)` calls during assembly. |
+| When is `init()` registration acceptable? | Only for established blank-import plugin ecosystems, and only for immutable metadata/factories. |
+| How do I compose a default build? | Explicit registration by default; blank imports only for ecosystem compatibility. |
 | How do I prevent external Factory implementations? | Unexported method on the interface. |
 | How do I make config structs safe to extend? | `_ struct{}` as last field prevents positional initialization. |
 | How do I enforce config construction? | Unexported `createdByParseConfig` field, panic if false. |
@@ -318,9 +348,12 @@ cannot match with `errors.Is`.
 
 ## Anti-Patterns
 
-- **I/O in init().** Registration must be deterministic and side-effect-free.
-  `init()` registers metadata only. Connections, file reads, and goroutines
-  belong in `Provision`/`Start`.
+- **`init()` self-registration in ordinary application code.** It hides
+  ownership and mutates global state during import. Prefer explicit registry
+  assembly.
+- **I/O in init().** The rare ecosystem self-registration exception must be
+  deterministic and side-effect-free. Connections, file reads, config reads,
+  logging, and goroutines belong in `Provision`/`Start`.
 - **Silently ignoring duplicate registration.** Panic on duplicates. A silent
   overwrite means the wrong plugin runs and the developer gets no signal.
 - **Exported Factory interface without sealed method.** External implementations
@@ -340,6 +373,6 @@ cannot match with `errors.Is`.
   import `google.golang.org/grpc/status`. Map at the boundary.
 - **One-way error mapping.** Without `fromGRPCStatus`, the client receives raw
   gRPC errors that domain code cannot match with `errors.Is`.
-- **Global mutable state beyond the registry.** The plugin registry is the one
-  justified global. Plugin instances must receive their dependencies through
-  `Provision`/`Start`, not package-level variables.
+- **Global mutable state beyond an ecosystem registry.** Plugin instances must
+  receive their dependencies through `Provision`/`Start`, not package-level
+  variables.

@@ -18,9 +18,10 @@ and explicit retry/cancellation behavior.
 7. [Hedged Requests](#4-hedged-requests)
 8. [Bulkheading](#5-bulkheading)
 9. [Backpressure Propagation](#6-backpressure-propagation)
-10. [Timeouts as a System](#7-timeouts-as-a-system)
-11. [Cross-Pattern Rules](#cross-pattern-rules)
-12. [Decision Matrix](#decision-matrix)
+10. [Watchdog Timers](#7-watchdog-timers-for-long-lived-connections)
+11. [Timeouts as a System](#8-timeouts-as-a-system)
+12. [Cross-Pattern Rules](#cross-pattern-rules)
+13. [Decision Matrix](#decision-matrix)
 
 ---
 
@@ -384,7 +385,7 @@ func NewPaymentsClient(httpClient *http.Client) *PaymentsClient {
 ```
 
 Also use dedicated HTTP transports per downstream with `MaxConnsPerHost` matching
-the bulkhead size. See [Timeouts as a System](#7-timeouts-as-a-system) for the
+the bulkhead size. See [Timeouts as a System](#8-timeouts-as-a-system) for the
 full HTTP client template.
 
 ---
@@ -421,9 +422,30 @@ cancellation.
 
 ---
 
-## 7. Timeouts as a System
+## 7. Watchdog Timers for Long-Lived Connections
+
+For connections that stay open indefinitely (long polls, streaming RPCs,
+persistent tunnels), `http.Client.Timeout` is wrong — it kills healthy
+streams. Use a watchdog: set `conn.SetReadDeadline` before each read,
+reset on every received frame (including keepalives). If no frame arrives
+within the watchdog window (typically 2-3x the keepalive interval), the
+connection is presumed dead.
+
+Pair with application-level keepalives: the server sends periodic heartbeat
+frames (e.g., every 60 seconds with jitter). The watchdog catches stuck
+connections that TCP keepalive alone cannot detect quickly enough.
+
+## 8. Timeouts as a System
 
 Every inbound request and outbound call uses a `context.Context` deadline.
+
+### Per-context vs client-level timeouts
+
+`http.Client.Timeout` applies to the entire request lifecycle — correct for
+one-shot RPCs but fatal for long polls and streaming. When a client makes
+both types of calls, do not set `Client.Timeout`. Instead, enforce timeouts
+per-request via `context.WithTimeout` for RPCs and use watchdog timers for
+long-lived reads.
 
 ### Budget concept
 
@@ -574,6 +596,8 @@ corrupting another's signal:
 - `context.Background()` inside request handling.
 - Continuing work after `ctx.Done()`.
 - Not closing response bodies.
+- Setting `http.Client.Timeout` on a client that serves both long polls and RPCs (kills healthy streams).
+- No watchdog on long-lived connections (stuck connections consume resources indefinitely).
 
 ### Minimum viable metrics
 
@@ -608,3 +632,5 @@ request cancellation, inbound overload.
 | Bulkheading | Failsafe-go + per-downstream pools | Slow dep must not starve others; multiple downstreams or mixed workloads | Single trivial dep already bounded |
 | Backpressure | HTTP `429`/`503` + `Retry-After`; gRPC `RESOURCE_EXHAUSTED` | Rejecting due to quota or overload | Hiding overload as success (`200`/`500`) |
 | Timeouts | Parent deadline + child budgets + transport timeouts | Every boundary call | Never optional |
+| Watchdog timer | Read-deadline reset on every frame | Long polls, streaming, persistent connections with keepalives | One-shot RPCs (use per-context timeout) |
+| Per-context timeout | `context.WithTimeout` per request | Mixed client: long polls + one-shot RPCs | Single-purpose client where `Client.Timeout` suffices |

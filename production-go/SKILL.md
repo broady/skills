@@ -56,12 +56,12 @@ These prevent production incidents. Apply unconditionally to all hand-written
 and agent-produced code. Tool-generated files (protobuf stubs, sqlc output,
 `go generate` artifacts) are exempt; do not modify them.
 
-1. **No mutable globals.** Package-level `var` only for sentinels, compile-time checks, and immutable-by-construction values. Everything else flows through constructors. See [references/design.md](references/design.md).
-2. **Avoid `init()`.** Prefer explicit registry assembly. `init()` is acceptable only for deterministic metadata/factory registration with no I/O, goroutines, live dependencies, or config reads. See [references/design.md](references/design.md) and [references/plugin-systems.md](references/plugin-systems.md).
+1. **No mutable globals.** Package-level `var` only for sentinels, compile-time checks, immutable-by-construction values, and write-once hooks (set exactly once during init, panic on double-set). Everything else flows through constructors. See [references/design.md](references/design.md) and [references/design-idioms.md](references/design-idioms.md).
+2. **Avoid `init()`.** Prefer explicit registry assembly. `init()` is acceptable only for deterministic metadata/factory registration with no I/O, goroutines, live dependencies, or config reads. **Never read environment variables or config during `init()`** — values may not be set yet, and ordering is unpredictable. Guard against this with an early-main assertion (see [references/config.md](references/config.md)). See [references/design.md](references/design.md) and [references/plugin-systems.md](references/plugin-systems.md).
 3. **Errors: propagate with context, handle once at the boundary.** Use `%w` only when exposing the cause is stable contract; otherwise `%v` or map to domain error. Never log and return. See [references/errors.md](references/errors.md).
 4. **No naked goroutines.** A goroutine's maximum lifetime must be bounded by the scope that owns and waits for it. Start goroutines via `sync.WaitGroup.Go`, `errgroup`, `run.Group`, `safe.Collect`, or an explicit owner that can cancel and wait. Looping or blocking goroutines select on `ctx.Done()`. Raw `go` requires documented owner, stop path, wait path, and reason. For servers with goroutine-per-connection patterns bounded by MaxConn, a goroutine gate function (check state + WaitGroup.Add + go) is acceptable; see [references/concurrency.md](references/concurrency.md).
 5. **Bounded concurrency.** `errgroup.SetLimit(n)` or `semaphore.Weighted`. Never unbounded goroutines in a loop.
-6. **Graceful shutdown is mandatory and phased.** Drain → Hammer → Terminate. See [references/server/scaffold.md](references/server/scaffold.md).
+6. **Graceful shutdown is mandatory and ordered.** For request-serving APIs: Drain → Hammer → Terminate. For daemons and agents: dependency-ordered teardown (stop producers before consumers, wait on goroutine accounting, timeout at critical boundaries). Both models require explicit timeouts. See [references/lifecycle.md](references/lifecycle.md) and [references/server/scaffold.md](references/server/scaffold.md).
 7. **Bound every resource explicitly.** HTTP servers/clients: explicit timeouts. DB pools: `MaxConns`, lifetime, idle time. Retries: max attempts + backoff. Queues: explicit capacity. Shutdown: deadline on drain.
 8. **Strong types for domain values.** `type AccountID string`, `type Cents int64`. Prevents wrong-ID-type bugs at compile time.
 9. **System boundary contracts.** Cross-service data validated at boundaries: correct ID types, populated fields, documented invariants. Treat external data with suspicion.
@@ -116,7 +116,7 @@ and libraries.
 **Always check:**
 
 - Unmanaged goroutines or unbounded concurrency
-- Buffered channels with capacity > 1 and no backpressure-contract comment
+- Buffered channels with capacity > 1 and no backpressure-contract comment (document: drop policy, priority separation, and what happens when full)
 - Ignored/swallowed errors or log-and-return
 - Mutable package globals or unsafe `init()`
 - `http.DefaultClient`, `http.Get()`, or servers without explicit timeouts
@@ -150,6 +150,9 @@ and libraries.
 | Represent a domain identifier | `type FooID string` / `type FooID int64` — not raw primitive |
 | Log | `*slog.Logger` via constructor |
 | Protect shared state | `sync.Mutex` (read-heavy: `sync.RWMutex`); compound mutations: `safe.Locked[T]` |
+| Track goroutine lifecycle at runtime | Goroutine accounting: `Go()` increments counter, defer decrements. Assert zero at shutdown in tests |
+| Return immutable data from getters | View types: read-only wrappers over slices/maps. Prevents caller mutation of internal state |
+| Serialize async state changes | `ExecQueue`: ordered serial execution with at most 1 goroutine. Prevents thundering herd |
 | Make outgoing HTTP requests | Custom `http.Client{Timeout: ...}`. Never `http.DefaultClient` |
 | Handle partial failure in fan-out | Collect results + errors separately. Return partial results with warnings — see [references/resilience.md](references/resilience.md) |
 
@@ -163,6 +166,8 @@ and libraries.
 | Serve HTTP | `http.Server{}` with explicit `ReadHeaderTimeout`, `ReadTimeout`, `WriteTimeout`, `IdleTimeout` |
 | Protect outbound calls (retry, breaker, timeout) | `failsafe-go` composition per dependency — see [resilience.md](references/resilience.md) |
 | Classify errors for retry decisions | Tag at creation: permanent (never retry), retryable (with backoff). Use `SafeToRetry` for DB/network — see [references/errors.md](references/errors.md) |
+| Detect stuck long-lived connections | Watchdog timer: reset on every received frame (including keepalives). Terminate on expiry — see [references/resilience.md](references/resilience.md) |
+| Apply per-context timeouts (mixed long-poll + RPC) | `context.WithTimeout` per-request, not `http.Client.Timeout`. Client-level timeout kills long polls — see [references/resilience.md](references/resilience.md) |
 | Manage process lifecycle (multi-subsystem) | `run.Group` for independent subsystems, topological ordering for pipelines — see [references/lifecycle.md](references/lifecycle.md) |
 | Reload config without downtime | Start-then-stop or atomic handler swap. Serialize reloads. Support rollback — see [references/lifecycle.md](references/lifecycle.md) |
 | Write data durably | temp file → write → fsync → rename → fsync dir — see [references/data-integrity.md](references/data-integrity.md) |

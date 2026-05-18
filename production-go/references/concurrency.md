@@ -245,6 +245,15 @@ crashes the process — this is intentional. Panics indicate programmer errors
 where state may be corrupted; recovering and returning partial results would
 mask the corruption. Validate untrusted inputs before passing them to Collect.
 
+### ExecQueue — serialized async execution
+
+When state changes must be processed in order but not block the caller, use
+a serial execution queue. `Add(f)` appends to a slice; if no goroutine is
+running, one is started to drain the queue. At most one goroutine runs at a
+time. Use for observer notifications, state machine transitions, ordered
+event delivery. Not suitable when cancellation or error propagation is needed
+— use errgroup or a context-aware worker channel instead.
+
 ### Goroutine gate — long-lived independent goroutines
 
 When goroutines are long-lived and independently managed (goroutine-per-connection
@@ -498,6 +507,14 @@ a public `syncs.MutexValue[T]` with the same API shape.
 | Replace value (independent of old) | `Store(v)` |
 | Read-modify-write, conditional update | `Do(func(*T))` |
 | Multiple fields with invariants | `Do(func(*T))` |
+
+### WaitGroup with done channel
+
+`sync.WaitGroup` cannot be used in a `select`. When shutdown needs to wait
+on a WaitGroup alongside `ctx.Done()` or a timeout, wrap it with a helper
+that calls `wg.Wait()` in a `sync.Once`-guarded internal goroutine and
+closes a `chan struct{}` on completion. The internal goroutine's lifetime
+is bounded by the WaitGroup itself reaching zero.
 
 ### When channels ARE correct
 

@@ -158,6 +158,24 @@ func (s *Service) Shutdown(ctx context.Context) error {
 }
 ```
 
+### Dependency-ordered teardown (daemons and agents)
+
+For long-running daemons that manage persistent connections or subsystem
+trees, the phased drain/hammer/terminate model does not map cleanly.
+Instead, tear down in reverse initialization order with timeouts at
+critical boundaries:
+
+1. Stop event subscribers — wait for handler goroutines to finish.
+2. Stop accepting new work.
+3. Critical cleanup with dedicated timeout (e.g., deregister ephemeral state).
+4. Stop subsystems in reverse init order.
+5. Cancel main context — signals all remaining goroutines.
+6. Wait for completion with deadline.
+
+Each subsystem's `Close`/`Shutdown` should wait for its own goroutines
+before returning. Use `Done() <-chan struct{}` channels to let dependents
+react to completion. Use `errors.Join` so every component attempts cleanup.
+
 ### Shutdown timeouts and error accumulation
 
 Every shutdown must be bounded. Use `context.Background()` as the parent --
@@ -222,6 +240,14 @@ func (w *Worker) Run(ctx context.Context, lc *Lifecycle) error {
     }
 }
 ```
+
+### Goroutine accounting for shutdown verification
+
+Track goroutines owned by a subsystem with an `atomic.Int64`: increment in
+`Go()`, defer decrement. After shutdown, assert the count reaches zero. In
+tests, wait with a timeout and fail if goroutines remain — this turns leaks
+into test failures. Complements `goleak`: the tracker catches your own
+subsystem's leaks; goleak catches leaks from any source.
 
 ---
 
@@ -501,10 +527,12 @@ func (s *Service) Run(ctx context.Context) error {
 |---|---|
 | Run multiple independent subsystems | `run.Group` -- any failure triggers all shutdowns |
 | Run pipeline stages in order | Topological start (downstream first), reverse shutdown |
+| Shut down a request-serving API | Phased: stop ingress → drain with timeout → force close |
+| Shut down a daemon/agent | Dependency-ordered teardown: reverse init order, timeout at critical boundaries |
 | Reload config without downtime | Start-then-stop with rollback, or atomic handler swap |
-| Shut down a network server | Stop accepting, drain with timeout, force close |
 | Shut down a stateful service | Mark unhealthy, deregister, drain, stop |
 | Coordinate complex shutdown order | Named lifecycle signals (DAG of channels) |
+| Verify all goroutines stopped at shutdown | Goroutine accounting tracker + test assertion |
 | Let subscribers veto config changes | Verify-then-commit with deep copies |
 | Clean up background goroutines on reload | Generational context cancellation |
 | Roll back on partial start failure | Start in order, stop already-started in reverse |

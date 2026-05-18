@@ -86,6 +86,23 @@ func (q *DropOldestQueue[T]) Push(item T) (dropped bool) {
 }
 ```
 
+### Head-drop on bounded channel
+
+For real-time forwarding where fresher data is always more valuable than
+stale, drop from the head (oldest) when full: non-blocking receive to evict,
+then non-blocking send to insert. Fall back to tail-drop after a few
+attempts. Every drop must increment a counter. Use for relay servers,
+telemetry, and streaming where latency matters more than completeness.
+
+### Priority send queues
+
+When a system carries both control-plane and data-plane traffic, use
+separate bounded channels with priority selection: a non-blocking select on
+the control queue first, then a blocking select on both. Control messages
+(health probes, discovery, keepalives) are never starved by bulk data.
+Combine with write batching — drain all pending messages with non-blocking
+selects before flushing — to reduce syscalls under load.
+
 ---
 
 ## 3. Slow Consumer Handling (NATS Pattern)
@@ -288,6 +305,8 @@ func (q *WorkQueue) Enqueue(ctx context.Context, work Work) error {
 | Data loss unacceptable, can wait | Block on overflow | Caller blocks until space available |
 | Data loss unacceptable, latency-sensitive | Reject + caller retry | `ErrQueueFull`, retry with backoff |
 | Notification/alerting queue | Drop oldest | Evict stale, newest always delivered |
+| Real-time relay, freshness > completeness | Head-drop | Evict oldest from channel, deliver freshest |
+| Mixed control + data traffic | Priority queues | Separate bounded queues, control always drained first |
 | Pub/sub, mixed consumer speeds | Slow consumer detection | Stall, pending limit, write deadline |
 | Multi-tenant ingestion | Per-tenant rate + memory admission | 429 + Retry-After; 503 on memory pressure |
 | Request to background handoff | `context.WithoutCancel` + bounded queue | Reject at queue; work survives request |

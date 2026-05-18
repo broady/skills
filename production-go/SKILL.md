@@ -43,7 +43,7 @@ These prevent production incidents. Apply unconditionally to all hand-written
 and agent-produced code. Tool-generated files (protobuf stubs, sqlc output,
 `go generate` artifacts) are exempt; do not modify them.
 
-1. **No mutable globals, avoid `init()`.** Package-level `var` only for sentinels, compile-time checks, and immutable-by-construction values. Everything else flows through constructors. Exception: write-once plugin/driver registration via init() into a mutex-protected registry is acceptable (see [references/plugin-systems.md](references/plugin-systems.md)). See [references/design.md](references/design.md).
+1. **No mutable globals, avoid `init()`.** Package-level `var` only for sentinels, compile-time checks, and immutable-by-construction values. Everything else flows through constructors. Prefer explicit registry assembly for plugins. `init()` self-registration is a rare ecosystem compatibility exception only for deterministic metadata/factory registration with no I/O, goroutines, live dependencies, or config reads. See [references/design.md](references/design.md) and [references/plugin-systems.md](references/plugin-systems.md).
 2. **Errors: propagate with context, handle once at the boundary.** Use `%w` only when exposing the cause is stable contract; otherwise `%v` or map to domain error. Never log and return. See [references/errors.md](references/errors.md).
 3. **No naked goroutines.** A goroutine's maximum lifetime must be bounded by the scope that owns and waits for it. Start goroutines via `errgroup`, `run.Group`, `safe.Go`, `safe.Collect`, or an explicit owner that can cancel and wait. Looping or blocking goroutines select on `ctx.Done()`. Raw `go` requires documented owner, stop path, wait path, and reason. For servers with goroutine-per-connection patterns bounded by MaxConn, a goroutine gate function (check state + WaitGroup.Add + go) is acceptable; see [references/concurrency.md](references/concurrency.md).
 4. **Bounded concurrency.** `errgroup.SetLimit(n)` or `semaphore.Weighted`. Never unbounded goroutines in a loop.
@@ -173,7 +173,7 @@ Load a reference file only when the task involves its domain. Skip unrelated one
 | [references/lifecycle.md](references/lifecycle.md) | Process lifecycle orchestration, run.Group, supervision trees, config reload, shutdown phasing | Starting/stopping multi-subsystem processes, config hot-reload, zero-downtime deploys |
 | [references/linting.md](references/linting.md) | golangci-lint config, linter rationale, CI setup | Configuring linters, CI pipeline |
 | [references/performance.md](references/performance.md) | Allocation reduction, profiling, benchmarking | Hot-path optimization, profiling |
-| [references/plugin-systems.md](references/plugin-systems.md) | Module lifecycle, sealed interfaces, init() registration, two-phase commit, config-driven provisioning | Building extensible systems, plugin registration, component lifecycle management |
+| [references/plugin-systems.md](references/plugin-systems.md) | Module lifecycle, explicit registries, sealed interfaces, two-phase commit, config-driven provisioning | Building extensible systems, plugin registration, component lifecycle management |
 | [references/project-layout.md](references/project-layout.md) | Directory structure, dependency direction | Greenfield service scaffolding |
 
 ### Server

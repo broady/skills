@@ -657,9 +657,9 @@ invariant has been violated and the program is in an inconsistent state.
 
 ### Approved recover sites
 
-`recover` is never used in application code. It appears only in **approved
-supervisors** — code whose purpose is to own goroutines or contain panics at a
-documented boundary. There are exactly two approved patterns:
+`recover` is never used in application code. It appears only in code whose
+purpose is to own goroutines or contain panics at a documented boundary. There
+are exactly three approved patterns:
 
 **1. Goroutine supervisors** (`safe.Go`, `safe.Collect`):
 
@@ -716,26 +716,31 @@ func (p *parser) expect(tok tokenType) {
 - This is a deliberate design choice, not a default. Prefer normal error
   returns unless the recursion depth genuinely makes them unwieldy.
 
+**3. Infrastructure boundary recovery that aborts the operation:**
+
+Transport infrastructure and narrow system boundaries around third-party code
+that may panic on malformed input may recover only to attach structured
+observability and then abort the operation. They must not translate the panic
+into ordinary application control flow or continue as if the operation
+succeeded. For `net/http`, log panic metadata and re-panic with
+`http.ErrAbortHandler` after ensuring request-scoped identifiers are recorded.
+For gRPC/Connect, prefer process-level supervision; only use equivalent
+infrastructure recovery when it aborts the request and preserves panic
+visibility.
+
 ### What is NOT approved
 
-- HTTP/gRPC panic recovery middleware. Google's style guide calls net/http's
-  handler recovery "a historical mistake." A broad recover that catches panics
-  from arbitrary code cannot know whether state is corrupted. Do not add
-  `recovery.UnaryServerInterceptor()` or equivalent.
+- HTTP/gRPC panic recovery middleware that converts panics into normal 500
+  responses and continues. Google's style guide calls net/http's handler
+  recovery "a historical mistake." A broad recover that catches panics from
+  arbitrary code cannot know whether state is corrupted. Do not add
+  `recovery.UnaryServerInterceptor()` or equivalent unless it follows approved
+  pattern 3.
 - Recovering panics to "avoid crashes." If the code panicked, something is
   wrong. Make it visible, don't hide it.
 - Recovering in application code and continuing the current operation. Only
-  supervisors (which own the failing goroutine) and package entry points
-  (which translate to returned errors) may recover.
-
-### Additional Approved Sites
-
-**Acceptable recover() sites beyond goroutine supervisors:**
-
-- System boundaries for third-party code that may panic on malformed input
-  (e.g., decompression libraries)
-- HTTP infrastructure middleware (re-panic with `http.ErrAbortHandler` after
-  logging)
+  supervisors, package entry points, and aborting infrastructure/system
+  boundaries may recover.
 
 **Acceptable panic() sites beyond Must* constructors:**
 

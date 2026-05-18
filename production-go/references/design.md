@@ -2,7 +2,7 @@
 
 ## Contents
 
-1. [Package Design](#1-package-design) — naming, internal/, file organization
+1. [Package Design](#1-package-design) — naming, internal/, file organization, declaration ordering
 2. [Dependency Injection](#2-dependency-injection) — constructor wiring, context is not DI, context keys
 3. [Interface Design](#3-interface-design) — consumer-side, small interfaces, compile-time checks
 4. [API Design — Hard to Misuse](#4-api-design--hard-to-misuse) — strong types, config structs, builders, functional options (discouraged)
@@ -33,6 +33,17 @@ myapp/
 ```
 
 Organize files within a package by **import similarity** — files that import the same dependencies belong together. Do not split one-struct-per-file.
+
+Within a file, order declarations for navigation:
+
+1. Package-level types, constants, and variables that define the public surface.
+2. Constructors and setup functions (`NewX`, `OpenX`, `ParseX`).
+3. Methods grouped by receiver, exported before unexported.
+4. Package-level helper functions, exported before unexported.
+
+Keep a receiver's methods together unless separating them by build tag or
+platform-specific implementation. Do not scatter methods for the same type
+throughout a file by chronological edit history.
 
 ## 2. Dependency Injection
 

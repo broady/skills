@@ -243,6 +243,15 @@ The gate function is a goroutine supervisor (an approved `recover` site). A raw
 (Server), stop path (context cancellation), wait path (WaitGroup), and admission
 control (boolean gate).
 
+Normal errors (connection closed, client timeout) are logged and the server
+continues — one bad connection is expected. Panics are different: a panic is a
+programmer error and shared state may be corrupted. The supervisor recovers the
+panic to avoid a raw process crash (which would skip drain), logs it with full
+stack, and triggers graceful shutdown. In-flight connections drain within the
+shutdown timeout, then the process exits and the orchestrator restarts it. This
+follows the supervisor rule: the owner receives a fatal error and acts on it
+(cancel siblings, shut down) — it does not continue as if nothing happened.
+
 ```go
 type Server struct {
     mu      sync.Mutex
@@ -269,6 +278,7 @@ func (s *Server) startGoRoutine(name string, f func(context.Context) error) bool
                     slog.Any("panic", r),
                     slog.String("stack", string(debug.Stack())),
                 )
+                s.cancel() // panic = programmer error; trigger graceful shutdown
             }
         }()
         if err := f(s.ctx); err != nil && !errors.Is(err, context.Canceled) {
@@ -545,12 +555,13 @@ if result.Err != nil {
 
 ### Channel size rule
 
-**0 or 1 by default. Any other size needs a comment.**
+**0 or 1 by default. Every buffered channel with capacity > 1 needs a comment
+explaining the backpressure contract.**
 
 ```go
 make(chan Event)          // fine: synchronous handoff
 make(chan Result, 1)      // one-shot handoff only with owner/stop/wait documented
-make(chan LogEntry, 4096) // REQUIRES justifying comment
+make(chan LogEntry, 4096) // bounded log buffer: drops oldest at capacity; producers never block request path
 ```
 
 `chan Result` with capacity `len(items)` is allowed only for finite fan-in when
@@ -565,3 +576,7 @@ results := make(chan Result, len(items)) // bounded fan-in: len(items) <= maxBat
 If you need a buffered channel > 1, you probably want `errgroup.SetLimit`,
 `safe.Collect`, a preallocated result slice, a mutex-protected collection, a
 semaphore, or a ring buffer instead.
+
+The comment must answer: why this capacity, what happens when full, and how
+producers are blocked, shed, or throttled. A bare number like `1000` is not a
+bound; it is an unreviewed outage threshold.

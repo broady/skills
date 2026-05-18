@@ -1,16 +1,17 @@
 # Go Design Idioms Reference
 
-Struct design, style guardrails, function organization, generics, copy semantics, and API evolution.
+Struct design, receiver consistency, style guardrails, function organization, generics, copy semantics, and API evolution.
 See [design.md](design.md) for the core model (packages, DI, interfaces, API design).
 
 ## Contents
 
 1. [Struct Design](#1-struct-design) — zero value, field names, embedding, mutex fields, noCopy
-2. [Uber Style Guardrails](#2-uber-style-guardrails) — type assertions, enums, time, nil slices, names, defer
-3. [Code Organization Within a Function](#3-code-organization-within-a-function) — guard clauses, line of sight, variable placement
-4. [Generics Guidelines](#4-generics-guidelines) — when to use, when not to, good patterns
-5. [API Evolution Safety](#5-api-evolution-safety) — _ struct{}, sealed interfaces, enforced construction
-6. [Copy Slices and Maps at Boundaries](#6-copy-slices-and-maps-at-boundaries) — inbound copies, outbound copies, when to skip
+2. [Receiver Consistency](#2-receiver-consistency) — pointer or value receivers per type, never mixed
+3. [Uber Style Guardrails](#3-uber-style-guardrails) — type assertions, enums, time, nil slices, names, defer
+4. [Code Organization Within a Function](#4-code-organization-within-a-function) — guard clauses, line of sight, variable placement
+5. [Generics Guidelines](#5-generics-guidelines) — when to use, when not to, good patterns
+6. [API Evolution Safety](#6-api-evolution-safety) — _ struct{}, sealed interfaces, enforced construction
+7. [Copy Slices and Maps at Boundaries](#7-copy-slices-and-maps-at-boundaries) — inbound copies, outbound copies, when to skip
 
 ## 1. Struct Design
 
@@ -139,7 +140,31 @@ or the methods promote onto your type's API. The struct is zero-size, so there
 is no runtime cost. This is the same pattern the stdlib uses in `sync.WaitGroup`,
 `sync.Once`, and `strings.Builder`.
 
-## 2. Uber Style Guardrails
+## 2. Receiver Consistency
+
+Choose pointer receivers or value receivers for a type and use that choice for
+every method on the type. Do not mix receiver kinds. Mixed receivers make method
+sets harder to reason about and can create subtle interface-satisfaction bugs.
+
+Use pointer receivers when any method mutates the receiver, the type contains a
+mutex, atomic value, noCopy marker, slice/map that represents owned mutable
+state, or the struct is large enough that copying is meaningful. Once one method
+needs a pointer receiver, all methods on that type use pointer receivers.
+
+Use value receivers only for small immutable value types where copying is part
+of the intended semantics.
+
+```go
+// GOOD: all methods use pointer receivers.
+func (s *Store) Get(ctx context.Context, id UserID) (User, error) { /* ... */ }
+func (s *Store) Put(ctx context.Context, user User) error         { /* ... */ }
+
+// BAD: mixed receiver kinds on one type.
+func (s Store) Get(ctx context.Context, id UserID) (User, error) { /* ... */ }
+func (s *Store) Put(ctx context.Context, user User) error        { /* ... */ }
+```
+
+## 3. Uber Style Guardrails
 
 ### Type assertions
 
@@ -225,7 +250,7 @@ Use raw string literals when they avoid escaping noise. If a printf-style
 format string is declared outside the call, make it a `const` so vet can check
 it.
 
-## 3. Code Organization Within a Function
+## 4. Code Organization Within a Function
 
 Guard clauses first. Happy path flows straight down ("line of sight"):
 
@@ -324,7 +349,7 @@ func process(items []Item) error {
 }
 ```
 
-## 4. Generics Guidelines
+## 5. Generics Guidelines
 
 Use generics for:
 - Type-safe containers and data structures
@@ -396,7 +421,7 @@ func GetUserName(svc *UserService, id string) string {
 }
 ```
 
-## 5. API Evolution Safety
+## 6. API Evolution Safety
 
 ### Prevent Unkeyed Struct Literals
 Add `_ struct{}` as the last field in public structs:
@@ -442,7 +467,7 @@ func Connect(ctx context.Context, cfg *Config) (*Conn, error) {
 ```
 Prevents misconfiguration from zero-valued structs. Provide `Copy()` for safe modification after parsing.
 
-## 6. Copy Slices and Maps at Boundaries
+## 7. Copy Slices and Maps at Boundaries
 
 Slices and maps are reference types. When a struct stores a slice received
 from a caller, both sides share the backing array. The caller mutates it

@@ -190,21 +190,21 @@ Load a reference file only when the task involves its domain. Skip unrelated one
 
 | File | Covers | Load when... |
 |---|---|---|
-| [references/backpressure.md](references/backpressure.md) | Tiered flow control, memory limiters, queue bounds, per-tenant rate limiting, slow consumer handling | Adding flow control between pipeline stages, protecting against overload, bounding queues |
-| [references/concurrency.md](references/concurrency.md) | Structured concurrency model, goroutine lifecycle, bounded concurrency, sync vs channels, Locked[T] | Spawning goroutines, channels, workers, shared state, choosing sync primitives |
+| [references/backpressure.md](references/backpressure.md) | Tiered flow control, memory limiters, queue bounds, per-tenant rate limiting, slow consumer handling | Connecting pipeline stages with channels/queues, adding rate limiting, handling slow consumers |
+| [references/concurrency.md](references/concurrency.md) | Structured concurrency model, goroutine lifecycle, bounded concurrency, sync vs channels, Locked[T] | Adding goroutines, protecting shared state with mutexes, choosing between channels and sync primitives |
 | [references/concurrency-patterns.md](references/concurrency-patterns.md) | Fan-out/fan-in, background workers, closure pitfalls, cancellation causes, goroutine gate, anti-patterns, goleak, synctest | Writing loops that spawn goroutines, reviewing concurrent code, testing time-dependent code, rate limiting, singleflight |
-| [references/errors.md](references/errors.md) | Error types, wrapping, sentinels, boundary mapping, panic/recover | Error contracts, error handling, boundary mapping |
+| [references/errors.md](references/errors.md) | Error types, wrapping, sentinels, boundary mapping, panic/recover | Adding/modifying functions that return errors, wrapping errors from dependencies, mapping errors to HTTP/gRPC status codes |
 | [references/config.md](references/config.md) | What belongs in config vs code, Secret type, validation, LoadConfig pattern, graduation criteria, env-only/file/CLI deviations | Config loading, adding config values, deciding what should be configurable |
 | [references/controller-loops.md](references/controller-loops.md) | Informer-queue-worker pattern, reconciliation, work queue semantics, bounded retry, cache sync | Writing Kubernetes-style controllers, reconciliation loops, event-driven processing |
 | [references/data-integrity.md](references/data-integrity.md) | Atomic writes, verify-after-write, conflict detection, filesystem safety, crash recovery | Writing data to disk safely, handling concurrent file access, backup/sync operations |
-| [references/design.md](references/design.md) | Packages, DI, interfaces, API design, config structs, builders | Package structure, constructors, public APIs, config patterns |
-| [references/design-idioms.md](references/design-idioms.md) | Struct design, Uber guardrails, function organization, generics, API evolution (_ struct{}), copy semantics | Struct layout, zero values, generics usage, defensive copies, code style |
-| [references/testing.md](references/testing.md) | goleak, property testing, integration tests, benchmarks, fakes | Writing tests for concurrent code, integration infra, benchmarks |
-| [references/lifecycle.md](references/lifecycle.md) | Process lifecycle orchestration, run.Group, supervision trees, config reload, shutdown phasing | Starting/stopping multi-subsystem processes, config hot-reload, zero-downtime deploys |
-| [references/linting.md](references/linting.md) | golangci-lint config, linter rationale, CI setup | Configuring linters, CI pipeline |
-| [references/performance.md](references/performance.md) | Allocation reduction, profiling, benchmarking | Hot-path optimization, profiling |
-| [references/plugin-systems.md](references/plugin-systems.md) | Module lifecycle, explicit registries, sealed interfaces, two-phase commit, config-driven provisioning | Building extensible systems, plugin registration, component lifecycle management |
-| [references/project-layout.md](references/project-layout.md) | Directory structure, dependency direction | Greenfield service scaffolding |
+| [references/design.md](references/design.md) | Packages, DI, interfaces, API design, config structs, builders | Adding a new package, writing a constructor, designing a public API, choosing between config structs and options |
+| [references/design-idioms.md](references/design-idioms.md) | Struct design, Uber guardrails, function organization, generics, API evolution (_ struct{}), copy semantics | Adding exported structs, using generics, deciding receiver types, evolving a public API without breaking callers |
+| [references/testing.md](references/testing.md) | goleak, property testing, integration tests, benchmarks, fakes | Writing tests (especially for concurrent or integration code), adding benchmarks, choosing test doubles |
+| [references/lifecycle.md](references/lifecycle.md) | Process lifecycle orchestration, run.Group, supervision trees, config reload, shutdown phasing | Wiring multiple long-running components together, adding config hot-reload, changing shutdown order |
+| [references/linting.md](references/linting.md) | golangci-lint config, linter rationale, CI setup | Setting up or modifying golangci-lint config, adding linters to CI |
+| [references/performance.md](references/performance.md) | Allocation reduction, profiling, benchmarking | Optimizing a function identified as slow by profiling, reducing allocations, writing benchmarks |
+| [references/plugin-systems.md](references/plugin-systems.md) | Module lifecycle, explicit registries, sealed interfaces, two-phase commit, config-driven provisioning | Adding a plugin/extension point, writing a registry, managing component provision and teardown |
+| [references/project-layout.md](references/project-layout.md) | Directory structure, dependency direction | Scaffolding a new service, adding a new package to an existing service, deciding where code lives |
 
 ### Server
 
@@ -223,13 +223,13 @@ Load a reference file only when the task involves its domain. Skip unrelated one
 | [references/database/transactions.md](references/database/transactions.md) | Explicit tx passing, Querier interface, WithTx helper, nested service calls | Writing or reviewing code that uses SQL transactions |
 | [references/database/cursor-iteration.md](references/database/cursor-iteration.md) | Keyset pagination, batched processing of large result sets | Iterating over large tables or implementing paginated queries |
 | [references/database/async-brokers.md](references/database/async-brokers.md) | External broker consumers, retry with backoff, at-least-once delivery, in-process queues | Implementing async processing, background jobs, or message handling |
-| [references/database/invariant-checks.md](references/database/invariant-checks.md) | Runtime safety checks gated by environment, dev-only panics | Adding debug assertions or catching programmer errors during development |
+| [references/database/invariant-checks.md](references/database/invariant-checks.md) | Runtime safety checks gated by environment, dev-only panics | Adding safety checks that should only fire in dev/test, validating internal assumptions at runtime |
 
 ### Resilience & Flow Control
 
 | File | Covers | Load when... |
 |---|---|---|
-| [references/resilience.md](references/resilience.md) | Circuit breaker, retry with budget, load shedding, hedged requests, bulkheading, backpressure, timeouts as a system, failsafe-go composition | Making outbound service calls, adding retry/timeout logic, handling overload, protecting against cascading failures |
+| [references/resilience.md](references/resilience.md) | Circuit breaker, retry with budget, load shedding, hedged requests, bulkheading, backpressure, timeouts as a system, failsafe-go composition | Adding an HTTP/gRPC client to a new dependency, adding retry or timeout logic, reviewing outbound call patterns |
 
 ### Observability
 
@@ -237,7 +237,7 @@ Load a reference file only when the task involves its domain. Skip unrelated one
 |---|---|---|
 | [references/observability/logging.md](references/observability/logging.md) | slog setup, injection, scoped loggers, levels, LogAttrs, redaction, canonical log lines | Adding/changing logging, reviewing log hygiene |
 | [references/observability/metrics-tracing.md](references/observability/metrics-tracing.md) | OTel provider setup, HTTP/gRPC middleware spans, manual spans, DB instrumentation, RED/USE metrics | Adding metrics or tracing, instrumenting endpoints |
-| [references/observability/runtime.md](references/observability/runtime.md) | pprof, goroutine labels, runtime/metrics, expvar | Debugging performance, adding profiling, exposing debug state |
+| [references/observability/runtime.md](references/observability/runtime.md) | pprof, goroutine labels, runtime/metrics, expvar | Adding a pprof endpoint, exposing runtime metrics, labeling goroutines for debug |
 
 ## Packages
 

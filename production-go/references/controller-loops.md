@@ -265,24 +265,27 @@ or the downstream is unhealthy. With batch size 1, only one doomed call is made
 before the controller backs off.
 
 ```go
-func slowStartBatch(count int, initialBatchSize int, fn func() error) (int, error) {
+func slowStartBatch(ctx context.Context, count int, initialBatchSize int, fn func(context.Context) error) (int, error) {
     remaining := count
     successes := 0
     for batchSize := min(remaining, initialBatchSize); batchSize > 0; batchSize = min(2*batchSize, remaining) {
-        errCh := make(chan error, batchSize)
-        var wg sync.WaitGroup
-        for range batchSize {
-            wg.Go(func() {
-                if err := fn(); err != nil {
-                    errCh <- err
+        items := make([]int, batchSize)
+        results := safe.Collect(ctx, batchSize, items, func(ctx context.Context, _ int) (struct{}, error) {
+            return struct{}{}, fn(ctx)
+        })
+
+        var firstErr error
+        for _, r := range results {
+            if r.Err != nil {
+                if firstErr == nil {
+                    firstErr = r.Err
                 }
-            })
+            } else {
+                successes++
+            }
         }
-        wg.Wait()
-        curSuccesses := batchSize - len(errCh)
-        successes += curSuccesses
-        if len(errCh) > 0 {
-            return successes, <-errCh
+        if firstErr != nil {
+            return successes, firstErr
         }
         remaining -= batchSize
     }

@@ -66,10 +66,10 @@ and agent-produced code. Tool-generated files (protobuf stubs, sqlc output,
 8. **Strong types for domain values.** `type AccountID string`, `type Cents int64`. Prevents wrong-ID-type bugs at compile time.
 9. **System boundary contracts.** Cross-service data validated at boundaries: correct ID types, populated fields, documented invariants. Treat external data with suspicion.
 10. **No `log.Fatal`, `os.Exit` outside `main()`.** Library/service code returns errors.
-11. **Operational parameters from configuration.** Addresses, credentials, feature flags loaded from config, never compiled into the binary.
+11. **Deployment-varying operational parameters from configuration.** Addresses, credentials, feature flags, pool sizes, and values that differ between environments are loaded from config. Protocol-level correctness values (timeouts derived from downstream SLOs, security boundaries) live in code with documented rationale.
 12. **Copy mutable data at ownership boundaries.** Store a caller-provided slice/map → copy it. Return internal state → return a snapshot. See [references/design-idioms.md](references/design-idioms.md).
 13. **Context is not a service locator.** First parameter, never stored in a struct. Used for cancellation, deadlines, request-scoped values. Dependencies go through constructors. Exception: storing a context that represents component/config lifecycle (not request lifetime) is acceptable when the context is created at provision and cancelled at unload.
-14. **No panic, no recover in application code.** Return errors. `recover` only in goroutine supervisors (`safe.Go`, `safe.Collect`) and package-internal entry points where panic is structured longjmp. Exceptions: (a) recover() at system boundaries for third-party code that may panic on malformed input, (b) panic() for programmer-error invariants in Must* constructors and exhaustive switches, (c) _ struct{} + panic for API evolution safety. See [references/errors.md](references/errors.md).
+14. **No panic, no recover in application code.** Return errors. `recover` only in goroutine supervisors (`safe.Go`, `safe.Collect`), package-internal entry points where panic is structured longjmp, and aborting infrastructure/system boundaries. `panic()` is limited to programmer-error invariants in Must* constructors, exhaustive switches, and `_ struct{}` API evolution safety. See [references/errors.md](references/errors.md).
 
 ## Output Contracts
 
@@ -116,6 +116,7 @@ and libraries.
 **Always check:**
 
 - Unmanaged goroutines or unbounded concurrency
+- Buffered channels with capacity > 1 and no backpressure-contract comment
 - Ignored/swallowed errors or log-and-return
 - Mutable package globals or unsafe `init()`
 - `http.DefaultClient`, `http.Get()`, or servers without explicit timeouts

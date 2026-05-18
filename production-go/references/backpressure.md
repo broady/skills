@@ -96,10 +96,19 @@ func (c *Connection) waitIfStalled(ctx context.Context) error {
 	select {
 	case <-stall:
 		return nil
-	case <-time.After(5 * time.Millisecond):
-		return nil
 	case <-ctx.Done():
 		return ctx.Err()
+	default:
+		timer := time.NewTimer(5 * time.Millisecond)
+		defer timer.Stop()
+		select {
+		case <-stall:
+			return nil
+		case <-timer.C:
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
 	}
 }
 ```

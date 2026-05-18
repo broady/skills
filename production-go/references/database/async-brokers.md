@@ -11,6 +11,12 @@ type Consumer[T any] struct {
     subscriber Subscriber
     handler    func(ctx context.Context, msg T) error
     logger     *slog.Logger
+    metrics    ConsumerMetrics
+}
+
+type ConsumerMetrics struct {
+    AckFailures  metric.Int64Counter
+    NackFailures metric.Int64Counter
 }
 
 func (c *Consumer[T]) Run(ctx context.Context) error {
@@ -27,13 +33,32 @@ func (c *Consumer[T]) Run(ctx context.Context) error {
                 slog.String("msg_id", msg.ID()),
                 slog.Any("err", err),
             )
-            msg.Nack() // broker will redeliver after visibility timeout
+            if nackErr := msg.Nack(); nackErr != nil {
+                c.metrics.NackFailures.Add(ctx, 1)
+                c.logger.LogAttrs(ctx, slog.LevelError, "nack failed",
+                    slog.String("msg_id", msg.ID()),
+                    slog.Any("err", nackErr),
+                )
+            }
             continue
         }
-        msg.Ack()
+        if err := msg.Ack(); err != nil {
+            c.metrics.AckFailures.Add(ctx, 1)
+            c.logger.LogAttrs(ctx, slog.LevelError, "ack failed",
+                slog.String("msg_id", msg.ID()),
+                slog.Any("err", err),
+            )
+        }
     }
 }
 ```
+
+Ack and nack are fallible broker operations. Do not ignore their errors. At
+minimum, emit a metric counter and structured log with message ID and operation.
+For visibility-timeout brokers, failed ack usually means redelivery will handle
+the message; failed nack usually means redelivery waits for visibility timeout.
+Document that behavior, and add poison-message/dead-letter handling so repeated
+redelivery does not loop forever.
 
 ## Retry with backoff
 

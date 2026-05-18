@@ -21,6 +21,8 @@ linters:
     - errcheck        # every error must be checked
     - bodyclose       # unclosed http.Response.Body leaks connections
     - noctx           # HTTP requests without context
+    - contextcheck    # do not discard incoming contexts
+    - fatcontext      # avoid context/timer leaks from contexts created in loops
     - sqlclosecheck   # unclosed sql.Rows / sql.Stmt
     - rowserrcheck    # unchecked sql.Rows.Err()
     - nilerr          # returning nil inside if err != nil

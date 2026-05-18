@@ -24,12 +24,15 @@ func buildConnectServer(cfg *Config, logger *slog.Logger, orderSvc *OrderService
 	)
 	mux.Handle(orderPath, orderHandler)
 
-	// Health (grpc.health.v1.Health) and reflection (for grpcurl)
+	// Health (grpc.health.v1.Health). Reflection is a discovery surface; enable
+	// it only for local/dev/admin environments via build tag or config flag.
 	checker := grpchealth.NewStaticChecker(orderv1connect.OrderServiceName)
 	mux.Handle(grpchealth.NewHandler(checker))
-	mux.Handle(grpcreflect.NewHandlerV1(
-		grpcreflect.NewStaticReflector(orderv1connect.OrderServiceName),
-	))
+	if cfg.EnableReflection {
+		mux.Handle(grpcreflect.NewHandlerV1(
+			grpcreflect.NewStaticReflector(orderv1connect.OrderServiceName),
+		))
+	}
 
 	// Engineering decisions, not config — these are correct for our protocol
 	// and workload. Graduate to config only when they need to vary per

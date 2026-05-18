@@ -148,7 +148,7 @@ func (s *Service) Shutdown(ctx context.Context) error {
         return fmt.Errorf("ring unregister: %w", err)
     }
 
-    select { // drain period
+    select { // drain period; OK: called once at shutdown, no leak risk.
     case <-time.After(s.drainTimeout):
     case <-ctx.Done():
         return ctx.Err()
@@ -524,8 +524,10 @@ running. Use `errors.Join` so every component attempts cleanup.
 shutdown is already done. Shutdown needs a fresh `context.Background()`
 with a deadline.
 
-**Starting consumers before producers are ready** -- consumers with no
-work may time out or log spurious errors. Start downstream first.
+**Not accounting for idle consumers** -- downstream components started before
+upstream may time out or log spurious errors if they have aggressive health or
+idle timeouts. Ensure consumer readiness probes tolerate an initial empty
+period.
 
 **Reloading config without serialization** -- concurrent SIGHUP handlers
 or API reloads can race. Serialize all reloads with a mutex.

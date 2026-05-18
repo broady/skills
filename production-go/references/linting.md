@@ -29,6 +29,8 @@ These catch real bugs. All are non-negotiable.
 | `errcheck` | Ensures every returned error is checked. Unhandled errors are the #1 source of silent data loss. |
 | `bodyclose` | Detects unclosed `http.Response.Body`. An unclosed body leaks a TCP connection and eventually exhausts the connection pool. |
 | `noctx` | Flags HTTP requests made without a `context.Context`. Without context, you lose cancellation, timeouts, and tracing propagation. |
+| `contextcheck` | Catches functions that discard an incoming context and call downstream work with `context.Background()` or another detached context. This breaks cancellation, deadlines, tracing, and shutdown. |
+| `fatcontext` | Catches contexts created inside loops and function literals where cancellation stacks up or is deferred too late. This prevents timer leaks and accidentally long-lived child contexts. |
 | `sqlclosecheck` | Catches unclosed `sql.Rows` and `sql.Stmt`. Leaked rows hold a database connection hostage. |
 | `rowserrcheck` | Ensures `sql.Rows.Err()` is checked after iteration. Without this, partial result sets go undetected. |
 | `nilerr` | Detects `return nil` inside an `if err != nil` block. Almost always a copy-paste bug. |
@@ -69,6 +71,22 @@ These surface easy wins that agents often miss.
 | Linter | Why |
 |---|---|
 | `depguard` | Enforces import deny-lists and layer boundaries at lint time. Prevents architectural violations before code review. See [Architectural Boundaries](#architectural-boundaries-depguard). |
+
+### Optional Style and Architecture Enforcement
+
+These can be useful on greenfield code or strict subsystems, but they primarily
+enforce style or architecture preferences. Keep them tiered so they do not block
+adoption of the bug-catching defaults.
+
+| Linter | Tier | Why |
+|---|---|---|
+| `copyloopvar` | Correctness on older Go / style on Go 1.22+ | Flags loop-variable captures. Still useful for code that must support older semantics or for making captures explicit. |
+| `unconvert` | Style | Removes redundant conversions. Good cleanup signal, rarely a production bug. |
+| `unparam` | Style/design | Finds unused parameters. Useful during refactors, but can fight interface-conformance and future-proofing. |
+| `containedctx` | Architecture | Prevents storing `context.Context` in structs. Enable when a codebase has drifted toward context-as-state. |
+| `ireturn` | Architecture | Restricts returning interfaces. Useful in strict package-boundary designs, noisy for factories and plugin systems. |
+| `interfacebloat` | Architecture | Caps interface size. Useful as a review aid, but thresholds are inherently local. |
+| `usestdlibvars` | Style | Replaces magic strings/status codes with stdlib constants. Helpful readability rule, not usually a bug. |
 
 ### Architectural Boundaries (depguard)
 

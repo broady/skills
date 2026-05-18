@@ -1,6 +1,17 @@
 # Runtime Diagnostics
 
-## pprof -- always on, separate internal port
+## Runtime diagnostics -- available to operators, gated from users
+
+Runtime diagnostics must be available to operators without redeploying, but
+must never listen on the public service interface. Run them on a separate admin
+listener. In non-local environments, require authentication, mTLS, or equivalent
+admin-plane access control in addition to network isolation.
+
+`pprof`, `trace`, `expvar`, goroutine dumps, heap profiles, and symbol endpoints
+are sensitive. Goroutine dumps can reveal business logic and dependency names.
+Heap profiles and `/debug/vars` can expose customer data, secrets, topology, or
+high-cardinality operational state. Trace and profile collection can also create
+meaningful CPU, memory, and disk pressure.
 
 ```go
 type DebugServerConfig struct {
@@ -12,6 +23,9 @@ type DebugServerConfig struct {
     IdleTimeout       time.Duration
 }
 
+// requireAdminAccess enforces the deployment's admin-plane access policy:
+// localhost-only in local development, and authentication or mTLS plus network
+// isolation in non-local environments.
 func addDebugServer(g *run.Group, logger *slog.Logger, cfg DebugServerConfig) {
     mux := http.NewServeMux()
     mux.HandleFunc("GET /debug/pprof/", pprof.Index)
@@ -24,7 +38,7 @@ func addDebugServer(g *run.Group, logger *slog.Logger, cfg DebugServerConfig) {
 
     srv := &http.Server{
         Addr:              cfg.Addr,
-        Handler:           mux,
+        Handler:           requireAdminAccess(mux),
         ReadHeaderTimeout: cfg.ReadHeaderTimeout,
         ReadTimeout:       cfg.ReadTimeout,
         WriteTimeout:      cfg.WriteTimeout,

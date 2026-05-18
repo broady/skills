@@ -2,6 +2,13 @@
 
 HTTP middleware patterns: request ID, logging, auth, and why not to recover panics.
 
+## Contents
+
+- [Request ID](#request-id)
+- [Logging](#logging)
+- [No panic recovery middleware](#no-panic-recovery-middleware)
+- [Auth](#auth)
+
 ## Request ID
 
 Validate and length-cap inbound `X-Request-ID`. Reflecting arbitrary header

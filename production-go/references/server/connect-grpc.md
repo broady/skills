@@ -2,6 +2,11 @@
 
 Connect handlers, interceptors, and traditional google.golang.org/grpc fallback.
 
+## Contents
+
+- [gRPC with Connect (project default)](#grpc-with-connect-project-default)
+- [Traditional google.golang.org/grpc](#traditional-googlegolangorggrpc)
+
 ## gRPC with Connect (project default)
 
 connectrpc.com/connect serves Connect, gRPC, and gRPC-Web on a single HTTP

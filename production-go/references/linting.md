@@ -1,5 +1,12 @@
 # Linting
 
+## Contents
+
+- [Project Default: golangci-lint](#project-default-golangci-lint)
+- [Recommended Linters](#recommended-linters)
+- [Linters to Disable](#linters-to-disable)
+- [golangci-lint in CI](#golangci-lint-in-ci)
+
 ## Project Default: golangci-lint
 
 Use `golangci-lint` as the project default linting tool. Avoid adding standalone

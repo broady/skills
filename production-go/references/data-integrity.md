@@ -3,6 +3,17 @@
 Patterns for crash-safe file operations, write verification, conflict detection,
 and transaction safety extracted from Syncthing, restic, pgx, and TiDB.
 
+## Contents
+
+- [1. Atomic File Writes (Six-Step Pattern)](#1-atomic-file-writes-six-step-pattern)
+- [2. Verify-After-Write (restic)](#2-verify-after-write-restic)
+- [3. Pre-Modification Safety Check (Syncthing)](#3-pre-modification-safety-check-syncthing)
+- [4. Content-Aware Conflict Detection (Syncthing)](#4-content-aware-conflict-detection-syncthing)
+- [5. Transaction Safety (pgx Patterns)](#5-transaction-safety-pgx-patterns)
+- [6. Statement-Level Staging (TiDB)](#6-statement-level-staging-tidb)
+- [Decision Table](#decision-table)
+- [Anti-Patterns](#anti-patterns)
+
 ## 1. Atomic File Writes (Six-Step Pattern)
 
 The full POSIX crash-safety protocol. A crash at any point leaves either the

@@ -89,7 +89,7 @@ State clearly:
 - Files created or modified
 - Which safety invariants are satisfied and how
 - Tests added (or why not)
-- Commands to validate (`go vet`, `golangci-lint run`, `go test ./...`)
+- Commands to validate (`golangci-lint run ./...`, `go test ./...`)
 
 ### When scaffolding a new service
 
@@ -141,7 +141,7 @@ and libraries.
 
 | I need to... | Do this |
 |---|---|
-| Run N things concurrently (fire-and-wait, no errors) | `sync.WaitGroup.Go` (Go 1.24+) |
+| Run N things concurrently (fire-and-wait, no errors) | `sync.WaitGroup.Go` (Go 1.25+) |
 | Run N things concurrently (all must succeed, error returns) | `errgroup.WithContext` + `SetLimit` |
 | Run N things concurrently (best-effort collect) | `safe.Collect` — bounded, per-item errors, panics crash |
 | Pass a dependency | Constructor parameter |

@@ -16,9 +16,9 @@
 >
 > - **Single service, Prometheus backend** — `prometheus/client_golang`
 >   directly is simpler and lighter.
-> - **Single service, no metrics backend yet** — canonical log lines (§1) +
->   pprof (§3) cover most debugging needs. Add metrics when you have
->   somewhere to send them.
+> - **Single service, no metrics backend yet** — canonical log lines
+>   ([logging.md](logging.md)) + pprof ([runtime.md](runtime.md)) cover
+>   most debugging needs. Add metrics when you have somewhere to send them.
 > - **Multiple services, need cross-service tracing** — OTel earns its weight
 >   here via vendor-neutral OTLP export and contrib auto-instrumentation.
 >

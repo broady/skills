@@ -286,7 +286,7 @@ func reloadConfig(reloaders []reloader, cfg *Config) error {
 }
 ```
 
-**Per-tenant runtime overrides** (Loki/Temporal pattern) — Default limits from flags; per-tenant overrides from a hot-reloaded YAML file. The overrides struct falls back to defaults:
+**Per-tenant runtime overrides** (Loki/Temporal pattern) — Default limits from flags; per-tenant overrides from a hot-reloaded YAML file. The overrides struct falls back to defaults. See also [backpressure.md](backpressure.md) for the atomic-pointer variant used in rate limiters.
 ```go
 func (o *Overrides) MaxRate(tenantID string) float64 {
 	if t := o.tenantLimits(tenantID); t != nil && t.MaxRate > 0 {

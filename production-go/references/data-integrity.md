@@ -3,7 +3,7 @@
 Patterns for crash-safe file operations, write verification, conflict detection,
 and transaction safety extracted from Syncthing, restic, pgx, and TiDB.
 
-## 1. Atomic File Writes (Five-Step Pattern)
+## 1. Atomic File Writes (Six-Step Pattern)
 
 The full POSIX crash-safety protocol. A crash at any point leaves either the
 old file or the new file intact, never a partial write.

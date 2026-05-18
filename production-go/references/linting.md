@@ -165,7 +165,7 @@ linters-settings:
     key-naming-case: snake   # enforce snake_case keys
 ```
 
-See [observability.md](observability.md#prefer-logattrs-everywhere) for the
+See [observability/logging.md](observability/logging.md#prefer-logattrs-everywhere) for the
 rationale behind `attr-only` and the typed attr constructor pattern.
 
 ### NilAway

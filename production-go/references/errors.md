@@ -209,7 +209,23 @@ type DomainError struct {
 	Err      error
 }
 
-func (e *DomainError) Error() string { /* format concise operational trace */ }
+func (e *DomainError) Error() string {
+	// Concise operational trace: "order.create [not_found] order 42: record missing"
+	s := e.Op
+	if e.Kind != "" {
+		s += " [" + string(e.Kind) + "]"
+	}
+	if e.Resource != "" {
+		s += " " + e.Resource
+		if e.ID != "" {
+			s += " " + e.ID
+		}
+	}
+	if e.Err != nil {
+		s += ": " + e.Err.Error()
+	}
+	return s
+}
 func (e *DomainError) Unwrap() error { return e.Err }
 ```
 

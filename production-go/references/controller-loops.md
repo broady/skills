@@ -45,6 +45,7 @@ a fixed-size pool controlled by the `workers` parameter to `Run()`.
 
 ```go
 type Controller struct {
+    logger      *slog.Logger
     queue       workqueue.TypedRateLimitingInterface[string]
     informer    cache.SharedIndexInformer
     lister      appslisters.DeploymentLister
@@ -53,10 +54,12 @@ type Controller struct {
 
 func NewController(
     ctx context.Context,
+    logger *slog.Logger,
     informer appsinformers.DeploymentInformer,
     client clientset.Interface,
 ) *Controller {
     c := &Controller{
+        logger: logger,
         queue: workqueue.NewTypedRateLimitingQueueWithConfig(
             workqueue.DefaultTypedControllerRateLimiter[string](),
             workqueue.TypedRateLimitingQueueConfig[string]{Name: "mycontroller"},
@@ -149,7 +152,7 @@ func (c *Controller) handleErr(ctx context.Context, err error, key string) {
     }
 
     if c.queue.NumRequeues(key) < maxRetries {
-        slog.WarnContext(ctx, "sync failed, retrying",
+        c.logger.LogAttrs(ctx, slog.LevelWarn, "sync failed, retrying",
             slog.String("key", key),
             slog.Any("err", err),
         )
@@ -157,7 +160,7 @@ func (c *Controller) handleErr(ctx context.Context, err error, key string) {
         return
     }
 
-    slog.ErrorContext(ctx, "dropping item after max retries",
+    c.logger.LogAttrs(ctx, slog.LevelError, "dropping item after max retries",
         slog.String("key", key),
         slog.Any("err", err),
     )

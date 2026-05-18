@@ -124,7 +124,12 @@ func (s *OrderService) PlaceOrder(ctx context.Context, req PlaceOrderReq) (*Orde
 
 ---
 
-## Connection Safety
+## Connection Safety (pgx)
+
+The patterns below are pgx-specific — they use `pgx`'s connection and pool
+types rather than `database/sql`. They show how pgx enforces safety invariants
+at the driver level. If you use `database/sql` exclusively, these patterns are
+handled differently (e.g., `sql.DB` pool management, driver-level retry).
 
 ### Connection Poisoning
 Kill connections on failed transaction control:

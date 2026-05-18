@@ -488,7 +488,7 @@ For subtle correctness bugs that static analysis can't catch (session reuse in
 iterators, ordering violations, data corruption from wrong ID types), add runtime
 invariant checks that run only in dev/test mode.
 
-See [database/invariant-checks.md](database/invariant-checks.md) for the full
+See [invariant-checks.md](invariant-checks.md) for the full
 pattern and examples. The key properties:
 
 - Gated behind `!setting.IsProd` or a build tag — zero cost in production.

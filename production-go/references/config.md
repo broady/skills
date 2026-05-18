@@ -242,3 +242,62 @@ if os.Getenv("ENV") == "prod" {
 
 The application does not know or care which environment it is in. It receives
 addresses, credentials, and feature flags -- that is all.
+
+---
+
+## Config Hot-Reload
+
+### Hot-Reload Patterns
+For services that need config changes without restart:
+
+**Checksum-based change detection** — SHA-256 the config file plus all referenced files. Only reload when checksum changes:
+```go
+func configChanged(paths []string, lastChecksum [32]byte) (bool, [32]byte, error) {
+	h := sha256.New()
+	for _, p := range paths {
+		data, err := os.ReadFile(p)
+		if err != nil {
+			return false, [32]byte{}, fmt.Errorf("read config dependency %s: %w", p, err)
+		}
+		h.Write([]byte(p))
+		h.Write(data)
+	}
+	var sum [32]byte
+	copy(sum[:], h.Sum(nil))
+	return sum != lastChecksum, sum, nil
+}
+```
+
+**Reloader chain** — Register named reloaders. Execute all sequentially. Partial failure doesn't abort:
+```go
+type reloader struct {
+	name     string
+	reloader func(*Config) error
+}
+
+func reloadConfig(reloaders []reloader, cfg *Config) error {
+	var errs []error
+	for _, r := range reloaders {
+		if err := r.reloader(cfg); err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", r.name, err))
+		}
+	}
+	return errors.Join(errs...)
+}
+```
+
+**Per-tenant runtime overrides** (Loki/Temporal pattern) — Default limits from flags; per-tenant overrides from a hot-reloaded YAML file. The overrides struct falls back to defaults:
+```go
+func (o *Overrides) MaxRate(tenantID string) float64 {
+	if t := o.tenantLimits(tenantID); t != nil && t.MaxRate > 0 {
+		return t.MaxRate
+	}
+	return o.defaults.MaxRate
+}
+```
+
+**Rules:**
+- Serialize concurrent reloads (mutex or channel)
+- Deep-copy config at subscriber boundaries
+- Log reload success/failure with metrics (config_reload_success gauge)
+- Never silently ignore reload errors — all reloaders execute, all errors are reported

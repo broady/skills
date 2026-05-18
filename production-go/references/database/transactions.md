@@ -121,3 +121,61 @@ func (s *OrderService) PlaceOrder(ctx context.Context, req PlaceOrderReq) (*Orde
 - **Don't store `*sql.Tx` in structs** — transactions are request-scoped.
 - **Rollback is deferred unconditionally** — `Rollback()` is a no-op after
   `Commit()`. Defer it immediately after `BeginTx`.
+
+---
+
+## Connection Safety
+
+### Connection Poisoning
+Kill connections on failed transaction control:
+```go
+func (tx *Tx) Commit(ctx context.Context) error {
+	_, err := tx.conn.Exec(ctx, "COMMIT")
+	if err != nil {
+		tx.conn.Close(ctx) // state is indeterminate
+		return err
+	}
+	if tx.conn.TxStatus() != 'I' {
+		tx.conn.Close(ctx) // server rolled back our COMMIT
+		return ErrTxCommitRollback
+	}
+	return nil
+}
+```
+A failed COMMIT or ROLLBACK means the connection state is indeterminate. Destroy it.
+
+### Pool Release Guard
+Never return a mid-transaction connection to the pool:
+```go
+func (c *PoolConn) Release() {
+	if c.conn.PgConn().TxStatus() != 'I' {
+		c.destroy() // still in a transaction — connection is unsafe
+		return
+	}
+	c.pool.putIdle(c)
+}
+```
+
+### SafeToRetry for Database Operations
+Only retry if no data was sent to the server:
+```go
+if pgconn.SafeToRetry(err) {
+	// Error occurred before any data was sent — safe to retry
+	return retry(ctx, fn)
+}
+// Data may have been sent — do NOT retry without idempotency key
+return err
+```
+
+### Connection Pool Health Dimensions
+Configure all five dimensions:
+```go
+pool, _ := pgxpool.NewWithConfig(ctx, &pgxpool.Config{
+	MaxConns:              int32(max(4, runtime.NumCPU())),
+	MaxConnLifetime:       time.Hour,
+	MaxConnLifetimeJitter: 5 * time.Minute, // prevent thundering herd
+	MaxConnIdleTime:       30 * time.Minute,
+	MinConns:              2,
+})
+```
+`MaxConnLifetimeJitter` prevents all connections from expiring simultaneously after a deploy.

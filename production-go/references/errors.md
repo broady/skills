@@ -10,6 +10,7 @@
 - [Sentinel Errors](#sentinel-errors) — naming, matching with errors.Is
 - [Custom Error Types](#custom-error-types) — exported fields, Unwrap, errors.As
 - [Boundary Error Mapping](#boundary-error-mapping) — HTTP handler and gRPC interceptor patterns
+- [Error Classification for Retry and Routing](#error-classification-for-retry-and-routing) — permanent/retryable, SafeToRetry, OperationPossiblySucceeded
 - [Multi-Error Patterns](#multi-error-patterns) — errors.Join, validation, cleanup
 - [Testing Errors](#testing-errors) — assert specific errors, table-driven patterns
 - [Panic and Recover](#panic-and-recover) — when acceptable, approved recover sites
@@ -434,6 +435,120 @@ func domainToGRPC(ctx context.Context, logger *slog.Logger, method string, err e
 }
 ```
 
+## Error Classification for Retry and Routing
+
+Errors in production systems need more than a message — they need classification
+so callers can make routing decisions (retry, propagate, alert) without parsing
+strings or knowing implementation details. Classify at creation, not at handling.
+
+### Classify at Creation
+
+Mark errors as permanent or retryable at the point where you know. Do not push
+this decision to the caller.
+
+```go
+// Package-level error wrapping for classification.
+type PermanentError struct{ Err error }
+func (e *PermanentError) Error() string { return e.Err.Error() }
+func (e *PermanentError) Unwrap() error { return e.Err }
+
+func IsPermanent(err error) bool {
+	var p *PermanentError
+	return errors.As(err, &p)
+}
+```
+
+OTel Collector, Thanos, and Temporal all use this pattern. Thanos adds a
+`HaltError` that blocks the process to prevent further damage from data
+corruption.
+
+### SafeToRetry (pgx pattern)
+
+For database and network operations, the critical question is: "did we send data
+to the server?" Only errors that occurred before any data was sent are safe to
+retry unconditionally. Unknown errors default to not safe — false negatives are
+better than duplicate writes.
+
+```go
+// SafeToRetry checks whether the failed operation is known
+// to have occurred before any data was sent to the server.
+func SafeToRetry(err error) bool {
+	for {
+		s, ok := err.(interface{ SafeToRetry() bool })
+		if ok {
+			return s.SafeToRetry()
+		}
+		err = errors.Unwrap(err)
+		if err == nil {
+			return false // unknown errors are not safe to retry
+		}
+	}
+}
+```
+
+### OperationPossiblySucceeded (Temporal pattern)
+
+For operations with side effects (DB writes, RPCs), classify whether the
+operation might have committed despite the error. If possibly succeeded, trigger
+side-effect notifications (task scheduling, event propagation). If definitely not
+committed, skip them.
+
+```go
+func OperationPossiblySucceeded(err error) bool {
+	if err == nil {
+		return true
+	}
+	// These errors mean definitely not committed:
+	if IsConditionFailed(err) || IsResourceExhausted(err) {
+		return false
+	}
+	// Network timeout, unknown error = might have committed
+	return true
+}
+```
+
+### Typed Close/Failure Reasons (NATS pattern)
+
+For connection-oriented systems, type every close reason. This enables precise
+monitoring, differential cleanup, and targeted alerting.
+
+```go
+type ClosedState int
+const (
+	ClientClosed ClosedState = iota + 1
+	AuthenticationTimeout
+	SlowConsumerPendingBytes
+	SlowConsumerWriteDeadline
+	WriteError
+	ReadError
+	ParseError
+	MaxPayloadExceeded
+	// ... every reason is enumerated
+)
+```
+
+### Three-Way Error Action (TiDB pattern)
+
+When multiple components must decide how to handle an error, use a three-way
+classification that separates error classification from error handling:
+
+- `ActionError` — this is a real error, propagate it
+- `ActionRetry` — this is retryable, retry the operation
+- `ActionNoIdea` — I don't know, let someone else decide
+
+This allows each layer to contribute classification without overriding the
+decisions of other layers.
+
+### Decision Table
+
+| I need to... | Pattern |
+|---|---|
+| Decide whether to retry | Classify as permanent/retryable at creation |
+| Retry a DB/network operation | Check SafeToRetry — was data sent? |
+| Handle possible partial commit | Use OperationPossiblySucceeded |
+| Monitor connection failures | Type every close reason with an enum |
+| Let multiple layers classify | Three-way action (Error/Retry/NoIdea) |
+
 ## Multi-Error Patterns
 
 Use `errors.Join` (Go 1.20+) to collect independent errors. Each joined
@@ -612,3 +727,19 @@ func (p *parser) expect(tok tokenType) {
 - Recovering in application code and continuing the current operation. Only
   supervisors (which own the failing goroutine) and package entry points
   (which translate to returned errors) may recover.
+
+### Additional Approved Sites
+
+**Acceptable recover() sites beyond goroutine supervisors:**
+
+- System boundaries for third-party code that may panic on malformed input
+  (e.g., decompression libraries)
+- HTTP infrastructure middleware (re-panic with `http.ErrAbortHandler` after
+  logging)
+
+**Acceptable panic() sites beyond Must* constructors:**
+
+- Exhaustive switch defaults for enum types (crash > silent wrong behavior)
+- Data structure invariant violations where continuing risks data corruption
+- `_ struct{}` as last field in public structs (prevents unkeyed literal
+  initialization)

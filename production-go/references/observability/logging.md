@@ -184,7 +184,7 @@ logger.LogAttrs(ctx, slog.LevelInfo, "order placed",
 ```
 
 Enforce with `sloglint` (`attr-only: true`) — see
-[linting.md](linting.md#sloglint).
+[linting.md](../linting.md#sloglint).
 
 ## Never log and return
 

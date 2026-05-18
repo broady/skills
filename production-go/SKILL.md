@@ -9,7 +9,7 @@ license: Apache-2.0
 compatibility: Requires Go 1.26+, golangci-lint
 metadata:
   author: cbro
-  version: "0.5"
+  version: "0.6"
 ---
 
 # Production Go
@@ -43,9 +43,9 @@ These prevent production incidents. Apply unconditionally to all hand-written
 and agent-produced code. Tool-generated files (protobuf stubs, sqlc output,
 `go generate` artifacts) are exempt; do not modify them.
 
-1. **No mutable globals, avoid `init()`.** Package-level `var` only for sentinels, compile-time checks, and immutable-by-construction values. Everything else flows through constructors. See [references/design.md](references/design.md).
+1. **No mutable globals, avoid `init()`.** Package-level `var` only for sentinels, compile-time checks, and immutable-by-construction values. Everything else flows through constructors. Exception: write-once plugin/driver registration via init() into a mutex-protected registry is acceptable (see [references/plugin-systems.md](references/plugin-systems.md)). See [references/design.md](references/design.md).
 2. **Errors: propagate with context, handle once at the boundary.** Use `%w` only when exposing the cause is stable contract; otherwise `%v` or map to domain error. Never log and return. See [references/errors.md](references/errors.md).
-3. **No naked goroutines.** A goroutine's maximum lifetime must be bounded by the scope that owns and waits for it. Start goroutines via `errgroup`, `run.Group`, `safe.Go`, `safe.Collect`, or an explicit owner that can cancel and wait. Looping or blocking goroutines select on `ctx.Done()`. Raw `go` requires documented owner, stop path, wait path, and reason. See [references/concurrency.md](references/concurrency.md).
+3. **No naked goroutines.** A goroutine's maximum lifetime must be bounded by the scope that owns and waits for it. Start goroutines via `errgroup`, `run.Group`, `safe.Go`, `safe.Collect`, or an explicit owner that can cancel and wait. Looping or blocking goroutines select on `ctx.Done()`. Raw `go` requires documented owner, stop path, wait path, and reason. For servers with goroutine-per-connection patterns bounded by MaxConn, a goroutine gate function (check state + WaitGroup.Add + go) is acceptable; see [references/concurrency.md](references/concurrency.md).
 4. **Bounded concurrency.** `errgroup.SetLimit(n)` or `semaphore.Weighted`. Never unbounded goroutines in a loop.
 5. **Graceful shutdown is mandatory and phased.** Drain → Hammer → Terminate. See [references/server/scaffold.md](references/server/scaffold.md).
 6. **Bound every resource explicitly.** HTTP servers/clients: explicit timeouts. DB pools: `MaxConns`, lifetime, idle time. Retries: max attempts + backoff. Queues: explicit capacity. Shutdown: deadline on drain.
@@ -54,8 +54,8 @@ and agent-produced code. Tool-generated files (protobuf stubs, sqlc output,
 9. **No `log.Fatal`, `os.Exit` outside `main()`.** Library/service code returns errors.
 10. **Operational parameters from configuration.** Addresses, credentials, feature flags loaded from config, never compiled into the binary.
 11. **Copy mutable data at ownership boundaries.** Store a caller-provided slice/map → copy it. Return internal state → return a snapshot. See [references/design.md](references/design.md).
-12. **Context is not a service locator.** First parameter, never stored in a struct. Used for cancellation, deadlines, request-scoped values. Dependencies go through constructors.
-13. **No panic, no recover in application code.** Return errors. `recover` only in goroutine supervisors (`safe.Go`, `safe.Collect`) and package-internal entry points where panic is structured longjmp. See [references/errors.md](references/errors.md).
+12. **Context is not a service locator.** First parameter, never stored in a struct. Used for cancellation, deadlines, request-scoped values. Dependencies go through constructors. Exception: storing a context that represents component/config lifecycle (not request lifetime) is acceptable when the context is created at provision and cancelled at unload.
+13. **No panic, no recover in application code.** Return errors. `recover` only in goroutine supervisors (`safe.Go`, `safe.Collect`) and package-internal entry points where panic is structured longjmp. Exceptions: (a) recover() at system boundaries for third-party code that may panic on malformed input, (b) panic() for programmer-error invariants in Must* constructors and exhaustive switches, (c) _ struct{} + panic for API evolution safety. See [references/errors.md](references/errors.md).
 
 ## Output Contracts
 
@@ -106,6 +106,12 @@ Before finalizing, verify no violations of:
 - Cross-system data used without boundary validation
 - Server shutdown that doesn't drain every listener, worker, and dependency
 - Missing tests for changed error handling, cancellation, concurrency, or ownership paths
+- Error taxonomy missing: errors not classified as permanent/retryable at creation
+- Shutdown not ordered: components stopped in wrong order (producers before consumers, or missing drain phase)
+- Config reload unsafe: no rollback on failure, no serialization of concurrent reloads
+- Backpressure missing: unbounded queue or channel between pipeline stages
+- Data writes not atomic: no temp-file-then-rename for durable writes
+- Plugin cleanup missing: no Cleanup on partial Provision/Start failure
 
 ## Core Decision Table
 
@@ -125,6 +131,16 @@ Before finalizing, verify no violations of:
 | Represent a domain identifier | `type FooID string` / `type FooID int64` — not raw primitive |
 | Log | `*slog.Logger` via constructor |
 | Protect shared state | `sync.Mutex` (read-heavy: `sync.RWMutex`); compound mutations: `safe.Locked[T]` |
+| Classify errors for retry decisions | Tag at creation: permanent (never retry), retryable (with backoff). Use `SafeToRetry` for DB/network — see [references/errors.md](references/errors.md) |
+| Reload config without downtime | Start-then-stop or atomic handler swap. Serialize reloads. Support rollback — see [references/lifecycle.md](references/lifecycle.md) |
+| Manage process lifecycle (multi-subsystem) | `run.Group` for independent subsystems, topological ordering for pipelines — see [references/lifecycle.md](references/lifecycle.md) |
+| Handle partial failure in fan-out | Collect results + errors separately. Return partial results with warnings — see [references/resilience.md](references/resilience.md) |
+| Write data durably | temp file → write → fsync → rename → fsync dir — see [references/data-integrity.md](references/data-integrity.md) |
+| Run a controller/reconciliation loop | Informer → rate-limited work queue → bounded workers. DeepCopy before mutation — see [references/controller-loops.md](references/controller-loops.md) |
+| Manage plugin/extension lifecycle | Provision → Validate → Start → Stop → Cleanup. Cleanup on partial failure — see [references/plugin-systems.md](references/plugin-systems.md) |
+| Prevent API breaking changes in Go | `_ struct{}` as last field in public structs. Sealed factory interfaces via unexported methods — see [references/design.md](references/design.md) |
+| Implement multi-tenant isolation | Tenant ID in context (never struct). Per-tenant limits via runtime-reloadable config — see [references/config.md](references/config.md) |
+| Apply backpressure in a pipeline | Multi-layered: memory limits → queue capacity → rate limiting. Never single mechanism — see [references/backpressure.md](references/backpressure.md) |
 
 ## Existing Codebases
 
@@ -146,13 +162,18 @@ Load a reference file only when the task involves its domain. Skip unrelated one
 
 | File | Covers | Load when... |
 |---|---|---|
+| [references/backpressure.md](references/backpressure.md) | Tiered flow control, memory limiters, queue bounds, per-tenant rate limiting, slow consumer handling | Adding flow control between pipeline stages, protecting against overload, bounding queues |
 | [references/concurrency.md](references/concurrency.md) | Structured concurrency model, goroutine lifecycle, workers, sync vs channels, closure pitfalls, leak detection (goleak), deterministic time testing (synctest), cancellation causes | Spawning goroutines, channels, workers, shared state, leak detection, testing time-dependent code |
 | [references/errors.md](references/errors.md) | Error types, wrapping, sentinels, boundary mapping, panic/recover | Error contracts, error handling, boundary mapping |
 | [references/config.md](references/config.md) | What belongs in config vs code, Secret type, validation, LoadConfig pattern, graduation criteria, env-only/file/CLI deviations | Config loading, adding config values, deciding what should be configurable |
+| [references/controller-loops.md](references/controller-loops.md) | Informer-queue-worker pattern, reconciliation, work queue semantics, bounded retry, cache sync | Writing Kubernetes-style controllers, reconciliation loops, event-driven processing |
+| [references/data-integrity.md](references/data-integrity.md) | Atomic writes, verify-after-write, conflict detection, filesystem safety, crash recovery | Writing data to disk safely, handling concurrent file access, backup/sync operations |
 | [references/design.md](references/design.md) | Packages, DI, interfaces, API design, config structs, builders, generics, defensive copies | Package structure, constructors, public APIs, config patterns |
 | [references/testing.md](references/testing.md) | goleak, property testing, integration tests, benchmarks, fakes | Writing tests for concurrent code, integration infra, benchmarks |
+| [references/lifecycle.md](references/lifecycle.md) | Process lifecycle orchestration, run.Group, supervision trees, config reload, shutdown phasing | Starting/stopping multi-subsystem processes, config hot-reload, zero-downtime deploys |
 | [references/linting.md](references/linting.md) | golangci-lint config, linter rationale, CI setup | Configuring linters, CI pipeline |
 | [references/performance.md](references/performance.md) | Allocation reduction, profiling, benchmarking | Hot-path optimization, profiling |
+| [references/plugin-systems.md](references/plugin-systems.md) | Module lifecycle, sealed interfaces, init() registration, two-phase commit, config-driven provisioning | Building extensible systems, plugin registration, component lifecycle management |
 | [references/project-layout.md](references/project-layout.md) | Directory structure, dependency direction | Greenfield service scaffolding |
 
 ### Server

@@ -53,6 +53,43 @@ currently safe but fragile.
 
 Severity follows impact and reachability, not just rule violation.
 
+### The "so what?" test
+
+Before assigning severity, answer these questions honestly:
+
+1. **Does this break today, or only if someone changes something?** A type-level
+   API that permits misuse but whose current callers are all correct is a design
+   hazard, not a High. Don't inflate severity based on hypothetical future
+   callers — report the actual risk and note the fragility.
+
+2. **Does process exit handle this?** Goroutine leaks, unfinished shutdown
+   steps, and leaked tickers are non-issues in orchestrated deployments where
+   the process exits after Stop(). They matter in library/embedded usage (test
+   harnesses that create and destroy subsystems without process exit, custom
+   binaries that restart components in-process). State which context the finding
+   applies to. A "goroutine leak at shutdown" that only matters for test hygiene
+   is Low, not High.
+
+3. **Is the infrastructure already handling this?** HTTP clients without explicit
+   timeouts are still bounded by TCP keepalive, load balancer timeouts, DNS TTL,
+   and context deadlines from callers. Check whether a higher-level timeout
+   exists before reporting an unbounded call. If the real-world bound is "30s
+   from the load balancer," say so and rate accordingly.
+
+4. **What actually happens when this fires?** "Goroutine leak" sounds scary but
+   if the goroutine is lightweight, bounded to one per component, and exits
+   within seconds of context cancellation, the operational impact is negligible.
+   Name the concrete consequence: does it exhaust memory? Hold a DB connection?
+   Block a port from rebinding? Corrupt data? If you can't name a concrete
+   production consequence, it's Low.
+
+5. **Is this a code bug or a rule violation?** A real bug (response body not
+   closed, error silently discarded, nil pointer reachable) is worth reporting
+   regardless of severity. A rule violation where the code works correctly
+   (missing mutex on a field only accessed from one goroutine, HTTP client
+   without Timeout but behind a context with deadline) is a design hazard at
+   best. Don't conflate "doesn't follow best practice" with "will break."
+
 ## False-Positive Checks
 
 Do not call a locked data structure a data race. If cancellation happens without
@@ -77,6 +114,27 @@ not covering role churn, shutdown, slow clients, or stuck I/O.
 
 Do not flag generated code for production-go style unless hand-written wrapper
 code around it creates the issue.
+
+Do not report a goroutine leak at shutdown as High unless the goroutine holds a
+scarce resource (DB connection, open port, file lock) or the code is used as a
+library where the process does not exit after Stop(). A goroutine that outlives
+Stop() by a few seconds in a process that's about to exit is Low — name the
+specific resource it holds or downgrade.
+
+Do not report a missing HTTP client timeout as High unless you've checked that
+no higher-level timeout exists (context deadline, load balancer, infrastructure
+keepalive). If the call is already bounded by a context with a deadline, the
+missing client-level timeout is defense-in-depth (Medium at most), not an
+unbounded call.
+
+Do not report a type-level API hazard (e.g., unsynchronized field that all
+current callers access from one goroutine) at the same severity as a live bug.
+The type permits misuse, but the code works. Rate as design hazard with a note
+about which invariant protects it today.
+
+These false-positive checks overlap deliberately with Phase 3.5 triage in
+[audit.md](audit.md). This file calibrates single reviews and per-finding
+verification; audit.md applies the same lens at the whole-audit level.
 
 ## Wording
 

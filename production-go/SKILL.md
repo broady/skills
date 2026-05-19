@@ -23,9 +23,10 @@ runtime checks. Bounded everything. Correctness at boundaries.
 
 ## How to use this skill
 
-1. **Classify the task** — review, produce, scaffold, design, add concurrency,
-   add DB/async, add observability, configure linting/tests.
+1. **Classify the task** — review, audit, produce, scaffold, design, add
+   concurrency, add DB/async, add observability, configure linting/tests.
 2. **Always enforce safety invariants** (below) — these apply to every task.
+   For review/audit tasks, also read the **Review Mode** section.
 3. **Preserve existing framework choices** unless the task is a new scaffold or
    a planned migration. Do not introduce a second logger, router, CLI framework,
    RPC stack, or DI style in one-off changes.

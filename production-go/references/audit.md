@@ -188,56 +188,98 @@ it. Findings that survive are real.
 ## Phase 4: Synthesis
 
 **Goal**: collect all verified findings into a prioritized summary the team can
-act on.
-
-Collect findings from Phase 3 and produce a summary with:
+act on. Write one markdown file per finding plus an index file.
 
 ### Priority mapping
 
-Priority reflects severity and confidence together:
+Priority is the fix-order bucket derived from severity and current status:
 
 | Priority | Criteria |
 |----------|----------|
 | P0 | Critical severity + Confirmed confidence |
 | P1 | High + Confirmed, or Critical + Partial |
 | P2 | Medium + Confirmed, or High + Partial |
-| P3 | Low, or Design hazard, or Medium + Partial |
+| P3 | Low, or Design hazard, or Medium + Partial, or Stale |
 | P4 | Style-only (include only if specifically requested) |
 
-### Summary table
+Dismissed findings stay in the index at P3 with `N/A` severity so false
+positives are visible and won't be re-reported.
 
-| Priority | Finding | Severity | Confidence | Category | Reproducer | Location |
-|----------|---------|----------|------------|----------|------------|----------|
+### Output: index file (`README.md`)
 
-### Summary stats
+The index is a single table sorted by priority. Include a short preamble
+explaining the priority scale. Example:
 
-- Total findings by severity
-- Total findings by category (correctness, reliability, safety, style)
-- Reproducer coverage (how many have tests)
-- Key themes (e.g., "most findings are lifecycle races in shutdown path")
+```markdown
+# Review Findings Index
 
-### Per-finding detail
+Priority is the fix-order bucket derived from severity and current status:
+`P0` is Critical, `P1` is High, `P2` is Medium, and `P3` is Low, stale,
+partial, dismissed, or design-only/static work.
 
-For each finding, include:
+| Priority | Severity | Category | Finding | Review status | Reproducer test status |
+|---|---|---|---|---|---|
+| P0 | Critical | Concurrency | [gRPC Stream Send Data Race](grpc-stream-send-race.md) | Confirmed | Not added. Needs fake stream. |
+| P1 | High | Availability | [Elector Bootstrap Stuck](elector-bootstrap-stuck.md) | Confirmed | Added: `TestOnAcquire...` in [..._test.go](path). |
+| P3 | N/A | Dismissed | [s.lastWritePath Race](DISMISSED-last-write-path-race.md) | Dismissed false positive | N/A |
+```
 
-- **Title**: precise label from review.md wording (data race, lifecycle race,
-  goroutine leak, etc.)
-- **Severity / Confidence / Priority**
-- **Category**: Correctness / Reliability / Safety / Style
-- **Location**: file path(s), function(s), line range(s)
-- **Description**: what the bug is, what the concrete trigger is
-- **Failure mode**: what happens in production
-- **Proof**: the specific evidence per review.md step 3
-- **Existing mitigations**: what's already in place
-- **Suggested fix**: reference specific patterns from the production-go
-  references and packages/safe
-- **Reproducer status**: reproduced / partially reproduced / not reproduced /
-  not attempted
-- **Production-go rule**: which rule(s) this violates
+### Output: per-finding files
 
-**Output format**: present findings in-conversation by default. If the user
-requests file output, use whatever path they specify. Do not create files
-unless asked.
+**Filename convention**: `<kebab-case-slug>.md`. Prefix dismissed findings with
+`DISMISSED-` and partial findings with `PARTIAL-`.
+
+Each finding file follows this template:
+
+````markdown
+# <Finding Title>
+
+| Field       | Value |
+|-------------|-------|
+| Severity    | Critical / High / Medium / Low / N/A |
+| Type        | Correctness / Concurrency / Lifecycle / Data ownership / ... |
+| Confidence  | Confirmed / Partial / Design hazard / Not real |
+| Guide rule  | Rule N (<name>), reference file |
+
+## Location
+
+- `path/to/file.go:line` (description of what's here)
+
+## Description
+
+What the bug is, with specific code references. Name the concrete mechanism
+(unsynchronized writer/reader, missing wait path, etc.).
+
+## Trigger
+
+What production condition reaches this code.
+
+## Impact
+
+What happens when it fires.
+
+## Suggested fix
+
+Reference specific patterns from the production-go references and packages/safe.
+````
+
+**For dismissed findings**, replace Description/Trigger/Impact/Suggested fix
+with:
+
+```markdown
+## Original claim
+
+What was originally suspected.
+
+## Investigation result
+
+**Dismissed.** Why it's not real, with specific evidence (mutex coverage,
+call ordering, grep results).
+```
+
+**For partial findings**, add an "Investigation result" section explaining why
+reach is limited and what would need to change for the finding to become
+confirmed.
 
 ---
 
@@ -260,9 +302,7 @@ might produce 15-20 review units. Phase 2 subagents can run in parallel; Phase
 one shutdown path).
 
 **Resumability.** If the audit is interrupted (timeout, context limit, user
-pause), it should be resumable. Keep per-finding state: each Phase 2 finding
-and Phase 3 verification result should be identifiable so that re-running the
-audit skips already-verified findings. When writing findings to files (at
-user's request), use one file per finding so partial progress is preserved. On
-resume, read existing verification results and skip findings that already have
-a verdict.
+pause), it should be resumable. Each Phase 2 finding and Phase 3 verification
+result is a separate file, so partial progress is preserved automatically. On
+resume, read existing finding files and skip findings that already have a
+verdict.

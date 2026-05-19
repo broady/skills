@@ -25,7 +25,8 @@ The audit is a fan-out/fan-in process, not a linear checklist:
    references
 3. **Per-finding verification** — parallel subagents confirm or refute each
    suspected issue, with reproducer tests where possible
-4. **Synthesis** — collect verified findings into a prioritized summary
+3.5. **Triage** — coordinator clusters patterns, cuts noise, keeps real bugs
+4. **Synthesis** — collect triaged findings into a prioritized summary
 
 Each phase produces findings that feed the next. Subagents are the primary
 mechanism for parallelism and for keeping each review focused on a manageable
@@ -77,8 +78,13 @@ Spawn one subagent per review unit. Each subagent receives:
 - Instruction to focus on correctness, not style — per the Existing Codebases
   section for legacy repos
 
-Each subagent scans its files and records suspected issues. Each finding
-should include:
+Each subagent scans its files and records suspected issues. **Quality over
+quantity**: a sweep that finds 3 real bugs is better than one that lists 15
+rule violations. Before recording a finding, the subagent should ask: "If I
+told a senior engineer about this, would they say 'good catch' or 'so what?'"
+Skip the "so what?" ones.
+
+Each finding should include:
 
 - **findingId**: unique identifier (e.g., `pkg-function-category`)
 - **location**: file, function, line range
@@ -185,9 +191,69 @@ it. Findings that survive are real.
 
 ---
 
+## Phase 3.5: Triage — Kill the Noise
+
+**Goal**: separate real bugs from rule violations before writing anything up.
+This is where audit quality is decided. An audit that reports 40 findings with 5
+real bugs is worse than one that reports 8 findings that are all actionable.
+
+**This is coordinator work, not subagent work.** The coordinator must see all
+Phase 3 results together to identify pattern clusters and make holistic triage
+decisions. Individual subagents can't detect that 6 findings are the same
+pattern repeated across components.
+
+### Step 1: Cluster by pattern
+
+Before triaging individual findings, group them by category + trigger. If
+multiple findings share the same root pattern (e.g., "Stop doesn't wait for
+goroutine" across 6 components), they are one finding with a list of locations —
+not 6 findings. Identify these clusters first, then triage the cluster as a
+unit.
+
+### Step 2: Apply the "so what?" test
+
+For each verified finding (or cluster), apply the "so what?" test from
+review.md:
+
+| Category | Action | Example |
+|----------|--------|---------|
+| **Real bug** | Report. This is why the audit exists. | Response body not closed on error path. Error silently discarded so caller sees success. Nil pointer reachable via empty config. |
+| **Real bug, wrong context** | Report with correct context. | Goroutine leak at shutdown — matters in library/test usage, not in orchestrated production where process exits. State this explicitly. |
+| **Hardening** | Report briefly, don't inflate. | HTTP client without Timeout but behind context deadline. Missing mutex on field accessed from one goroutine. |
+| **Rule violation, code works** | Omit or footnote. | Type-level API hazard where all callers are correct. Shutdown ordering that's safe by convention. |
+
+### What to cut
+
+- **"All callers are correct" findings**: if every caller serializes access or
+  provides the missing bound, and the unsafe API is internal, this is a
+  footnote — not a finding. Mention it in the themes section as "fragile API"
+  and move on.
+- **"Process exits anyway" findings**: goroutine leaks, ticker leaks, and
+  incomplete shutdown in code that runs as a managed service behind an
+  orchestrator. Report only if the code is also used as a library (tests,
+  embedded), and frame it as "library usage impact" not "production risk."
+- **"Theoretical slow peer" findings**: missing HTTP client timeout where the
+  call is to an internal service, behind a load balancer, or protected by a
+  context deadline. These are defense-in-depth suggestions, not findings.
+- **Pattern repetitions**: already handled by Step 1 clustering. One finding
+  with a list of locations, not N findings.
+
+### What survives triage
+
+The output should be a short list (typically 5-15 findings for a repo of
+50-200 packages) where every item has:
+- A concrete production consequence (not "could theoretically...")
+- A trigger that happens in normal operation (not "if someone changes the config
+  to an unsupported value")
+- A clear fix
+
+Themes and patterns go in the summary narrative, not as individual findings.
+
+---
+
 ## Phase 4: Synthesis
 
-**Goal**: collect all verified findings into a prioritized summary the team can
+**Goal**: collect all triaged findings into a prioritized summary the team can
 act on. Write one markdown file per finding plus an index file.
 
 ### Priority mapping
@@ -204,6 +270,22 @@ Priority is the fix-order bucket derived from severity and current status:
 
 Dismissed findings stay in the index at P3 with `N/A` severity so false
 positives are visible and won't be re-reported.
+
+### Themes (more important than individual findings)
+
+Patterns that span multiple locations are more useful than a long finding list.
+The index preamble should include a short themes section before the table.
+Examples:
+- "Shutdown doesn't wait for goroutines — 12 components have this pattern.
+  Matters for library/test usage, not production." (One theme, not 12 findings.)
+- "HTTP clients inconsistently configured — 4 production paths use
+  DefaultClient. Fix with a standard constructor."
+- "Panic recovery missing in 3 goroutine pools. SequentialScheduler has it,
+  others don't."
+
+The finding count in the index should reflect post-triage totals, not the raw
+sweep count. If Phase 2 produced 35 raw findings and triage consolidated them
+to 9, the index has 9 rows (plus dismissed entries for transparency).
 
 ### Output: index file (`README.md`)
 

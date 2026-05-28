@@ -6,6 +6,7 @@
 2. [Dependency Injection](#2-dependency-injection) — constructor wiring, context is not DI, context keys
 3. [Interface Design](#3-interface-design) — consumer-side, small interfaces, compile-time checks
 4. [API Design — Hard to Misuse](#4-api-design--hard-to-misuse) — strong types, config structs, builders, functional options (discouraged)
+5. [Library Authorship](#5-library-authorship) — zero logging, caller-owned concurrency, no init(), sealed interfaces
 
 **See also:** [design-idioms.md](design-idioms.md) — struct design, Uber guardrails, function organization, generics, copy semantics, API evolution
 
@@ -505,3 +506,61 @@ func Parse(f *os.File) (*Doc, error)
 
 Avoid nil parameters. If a parameter can be nil, callers must think about nil.
 Prefer config structs with zero-value defaults instead.
+
+## 5. Library Authorship
+
+Service code and library code have different constraints. Services own their
+goroutines, choose their logger, and control their lifecycle. Libraries are
+guests in someone else's process. When writing reusable packages (internal or
+public), apply these stricter rules:
+
+### Zero logging
+
+Libraries return errors; they never log. The application chooses when, where,
+and how to log. If a library needs structured diagnostic output, accept a
+`*slog.Logger` in the constructor and default to discard when nil:
+
+```go
+func New(opts Options) *Client {
+	logger := opts.Logger
+	if logger == nil {
+		logger = slog.New(slog.DiscardHandler)
+	}
+	return &Client{logger: logger}
+}
+```
+
+### Callers own concurrency
+
+Library functions return results synchronously. They do not spawn internal
+goroutines. If background work is unavoidable, expose a `Run(ctx) error`
+method so the caller controls the lifecycle:
+
+```go
+// GOOD: caller decides how to run it
+type Watcher struct{ /* ... */ }
+func (w *Watcher) Run(ctx context.Context) error { /* blocks until ctx done */ }
+
+// BAD: library spawns goroutines the caller must track
+func NewWatcher() *Watcher { go w.loop(); return w }
+```
+
+Never force the caller to remember "this library spawns goroutines I need to
+manage."
+
+### No init()
+
+Libraries must be importable without side effects. Register nothing globally.
+If the library needs setup, make it explicit via a constructor or `Register`
+function the caller invokes.
+
+### Functional options carve-out
+
+Config structs are the default (§4), but functional options are appropriate for
+public library APIs with long-term extensibility needs — where adding an option
+must not break callers.
+
+### Sealed interfaces
+
+When a library returns an interface type, seal it with an unexported method to
+preserve forward compatibility (see [design-idioms.md §8](design-idioms.md#8-api-evolution-safety)).

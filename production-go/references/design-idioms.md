@@ -608,3 +608,32 @@ func (s *Store) Labels() map[string]string {
 	return maps.Clone(s.labels)
 }
 ```
+
+### Alternative: restrict capability via interface
+
+When copying is expensive (large maps, frequently accessed), wrap mutable
+internal state behind a read-only interface instead of copying on every access:
+
+```go
+// Internal: the mutable registry.
+type codecRegistry struct {
+	codecs map[string]Codec
+}
+
+// Read-only view — subsystems receive this, not the map.
+type CodecLookup interface {
+	Get(name string) Codec
+	Contains(name string) bool
+	Names() []string
+}
+
+func (r *codecRegistry) Get(name string) Codec    { return r.codecs[name] }
+func (r *codecRegistry) Contains(name string) bool { _, ok := r.codecs[name]; return ok }
+func (r *codecRegistry) Names() []string           { /* return sorted keys */ }
+```
+
+This is the interface analog of the copy-at-boundaries rule: instead of
+copying data at the boundary, you restrict what operations are possible. The
+subsystem literally cannot mutate the map because it never sees the map.
+Prefer this when: (a) the data is large, (b) access is frequent, and (c) the
+read patterns are well-defined.

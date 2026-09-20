@@ -5,5 +5,5 @@
 //
 // Panics are never recovered. A panic in any goroutine crashes the process.
 // This follows Google's Go style guidance: recovering panics to avoid crashes
-// masks corrupted state. The orchestrator handles restart.
+// masks corrupted state. Restart behavior is a separate deployment contract.
 package safe

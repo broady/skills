@@ -23,6 +23,8 @@ For each suspected issue:
 4. Check existing synchronization and contracts before reporting. Look for
    mutexes, atomics, channel close ownership, context cancellation, typed
    domain errors, generated-code boundaries, and documented call ordering.
+   For changes to established contracts, apply the compatibility check in
+   [design-idioms.md §8](design-idioms.md#8-api-evolution-safety).
 5. Run targeted tests when useful. Passing `go test -race` only proves the
    exercised interleavings; it does not clear static races in untested paths.
 6. Classify the finding with both confidence and severity.
@@ -62,13 +64,14 @@ Before assigning severity, answer these questions honestly:
    hazard, not a High. Don't inflate severity based on hypothetical future
    callers — report the actual risk and note the fragility.
 
-2. **Does process exit handle this?** Goroutine leaks, unfinished shutdown
-   steps, and leaked tickers are non-issues in orchestrated deployments where
-   the process exits after Stop(). They matter in library/embedded usage (test
-   harnesses that create and destroy subsystems without process exit, custom
-   binaries that restart components in-process). State which context the finding
-   applies to. A "goroutine leak at shutdown" that only matters for test hygiene
-   is Low, not High.
+2. **Does verified process exit handle this?** Goroutine leaks, unfinished
+   shutdown steps, and leaked tickers may be non-issues when the actual deployment
+   guarantees process exit after Stop(). Do not assume an orchestrator or process
+   lifecycle that you have not verified. These issues matter in library/embedded
+   usage (test harnesses that create and destroy subsystems without process exit,
+   custom binaries that restart components in-process). State which context the
+   finding applies to. A "goroutine leak at shutdown" that only matters for test
+   hygiene is Low, not High.
 
 3. **Is the infrastructure already handling this?** HTTP clients without explicit
    timeouts are still bounded by TCP keepalive, load balancer timeouts, DNS TTL,
@@ -112,8 +115,10 @@ Do not treat `go test -race` passing as a refutation unless the test exercises
 the exact concurrent path and interleaving. Mention residual risk when tests are
 not covering role churn, shutdown, slow clients, or stuck I/O.
 
-Do not flag generated code for production-go style unless hand-written wrapper
-code around it creates the issue.
+Do not flag generated code for hand-written production-go style. Review generated
+behavior when it creates a correctness issue, and make fixes through the source
+or generator followed by reproducible regeneration. Also review hand-written
+wrapper code around generated output normally.
 
 Do not report a goroutine leak at shutdown as High unless the goroutine holds a
 scarce resource (DB connection, open port, file lock) or the code is used as a

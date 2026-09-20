@@ -3,6 +3,17 @@
 This file covers assertions, leak detection, property testing, integration
 infrastructure, benchmarking, race detection, fakes, and coverage.
 
+Follow the repository's established test and assertion conventions. The tools
+below are greenfield defaults, not a reason to add dependencies during an
+unrelated change. Existing conventions do not waive error-path, cancellation,
+ownership, or concurrency coverage.
+
+Do not use arbitrary wall-clock sleeps to wait for progress. Prefer completion
+signals, `testing/synctest`, fake clocks, or deterministic schedulers. A sleep
+that advances a fake clock is valid. At an external integration boundary with
+no completion signal or controllable clock, poll an explicit condition with a
+bounded deadline and report the last observed state on timeout.
+
 ## Contents
 
 1. [Assertions](#1-assertions) — assert/v2, go-cmp, error contracts
@@ -20,9 +31,10 @@ infrastructure, benchmarking, race detection, fakes, and coverage.
 
 ## 1. Assertions
 
-Use `github.com/alecthomas/assert/v2` for routine assertions in new tests. It
-has a small API surface, fails immediately, uses generics for type safety, and
-prints useful diffs for equality checks.
+For greenfield projects, use `github.com/alecthomas/assert/v2` for routine
+assertions. It has a small API surface, fails immediately, uses generics for
+type safety, and prints useful diffs for equality checks. In an existing
+repository, use its established assertion library or standard-library style.
 
 Use stdlib `testing` for test structure, helpers, subtests, cleanup, contexts,
 and custom control flow. Use `github.com/google/go-cmp/cmp` directly when a
@@ -102,7 +114,7 @@ func TestMain(m *testing.M) {
 
 For deterministic time testing (`synctest`), per-test leak verification with
 errgroup, and the relationship between goleak and structured concurrency, see
-[concurrency-patterns.md](concurrency-patterns.md#5-leak-detection-with-goleak).
+[concurrency-patterns.md](concurrency-patterns.md#4-leak-detection-with-goleak).
 
 ---
 

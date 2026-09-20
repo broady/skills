@@ -155,6 +155,13 @@ func envSecret(name string, dst *Secret) error {
 
 ## Validation
 
+Missing required configuration is an error. Explicitly supplied malformed or
+out-of-range configuration is also an error; do not reinterpret it as a request
+for a default. Defaults apply only to omitted optional settings or an explicitly
+documented default sentinel. Preserve presence information when zero, false, or
+empty is a meaningful supplied value. Resolve defaults and validate the complete
+configuration before constructing dependencies.
+
 Validate things the **deployment operator** controls. Do not validate hardcoded
 engineering defaults -- if `WriteTimeout` is always `30s` in your code, there is
 nothing to validate.

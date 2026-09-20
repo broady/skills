@@ -32,7 +32,9 @@ Taskfile.yml               # build, test, lint, run
 - **`transport/`** — thin adapter layer. Decodes wire format, calls service,
   encodes response, maps errors to status codes.
 - **Top-level `proto/`** — protobuf source of truth. Generated code goes
-  wherever `buf.gen.yaml` or `protoc` config places it (commonly `gen/`).
+  wherever `buf.gen.yaml` or `protoc` config places it (commonly `gen/`). Do not
+  hand-edit generated output: change the source or generator, regenerate with
+  the repository's versioned toolchain, and verify the diff is reproducible.
 
 ## When NOT to use this layout
 

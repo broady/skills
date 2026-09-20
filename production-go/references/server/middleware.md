@@ -6,7 +6,7 @@ HTTP middleware patterns: request ID, logging, auth, and why not to recover pani
 
 - [Request ID](#request-id)
 - [Logging](#logging)
-- [No panic recovery middleware](#no-panic-recovery-middleware)
+- [No recover-and-continue middleware](#no-recover-and-continue-middleware)
 - [Auth](#auth)
 
 ## Request ID
@@ -85,19 +85,24 @@ func (w *statusWriter) WriteHeader(code int) {
 }
 ```
 
-## No panic recovery middleware
+## No recover-and-continue middleware
 
-Do not add HTTP/gRPC middleware that recovers panics. A panic is a programmer
-error — the process must crash. Google's Go style guide calls net/http's
-built-in handler recovery "a historical mistake." Do not replicate it.
+Do not add HTTP/gRPC middleware that recovers panics into ordinary control flow.
+A panic is a programmer error and must not be converted into a normal response
+while the process continues. Google's Go style guide calls net/http's built-in
+handler recovery "a historical mistake." Do not replicate it as ordinary
+application control flow.
 
 A panic means state may be corrupted. Recovering it to return a 500 response
-and continue serving risks operating on corrupted state. Let the process crash.
-The orchestrator restarts it. Make panics observable through crash reporting
-and process supervision, not through middleware that converts them into
-responses.
+and continue serving risks operating on corrupted state. Make panics observable
+and preserve the process-termination policy. Do not assume a supervisor exists;
+restart behavior is part of the deployment contract.
 
-See [errors.md](../errors.md#approved-recover-sites) for the full policy.
+`net/http` recovers handler panics, including ones re-thrown by middleware, and
+keeps serving. Re-panicking in HTTP middleware therefore does not terminate the
+process. To terminate, use the `Terminate` middleware and fatal hook defined in
+`main` in [errors.md](../errors.md#approved-recover-sites): record the panic
+synchronously, then exit immediately without draining.
 
 ## Auth
 

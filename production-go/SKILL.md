@@ -10,10 +10,10 @@ description: >
   review Go code for production safety. For toy examples, apply only the safety rules
   relevant to the task.
 license: Apache-2.0
-compatibility: Requires Go 1.26+, golangci-lint
+compatibility: Go 1.26+; greenfield lint defaults use golangci-lint
 metadata:
   author: cbro
-  version: "0.6"
+  version: "0.7"
 ---
 
 # Production Go
@@ -25,11 +25,11 @@ runtime checks. Bounded everything. Correctness at boundaries.
 
 1. **Classify the task** — review, audit, produce, scaffold, design, add
    concurrency, add DB/async, add observability, configure linting/tests.
-2. **Always enforce safety invariants** (below) — these apply to every task.
-   For review/audit tasks, also read the **Review Mode** section.
+2. **Enforce safety invariants within task scope** (below). For review/audit
+   tasks, also read the **Review Mode** section.
 3. **Preserve existing framework choices** unless the task is a new scaffold or
    a planned migration. Do not introduce a second logger, router, CLI framework,
-   RPC stack, or DI style in one-off changes.
+   RPC stack, DI style, linter, or assertion library in one-off changes.
 4. **Load only the reference file needed** for the current task (see router below).
 
 ## Scope Calibration
@@ -53,24 +53,26 @@ Before approving any code — agent-produced or human-written — answer these:
 
 ## Safety Invariants
 
-These prevent production incidents. Apply unconditionally to all hand-written
-and agent-produced code. Tool-generated files (protobuf stubs, sqlc output,
-`go generate` artifacts) are exempt; do not modify them.
+These prevent production incidents. Enforce them in new and materially changed
+execution paths, including existing code whose violations make the requested
+change unsafe. Tool-generated files (protobuf stubs, sqlc output, `go generate`
+artifacts) are exempt from hand-written style rules: do not hand-edit them.
+Change the authoritative input or generator and regenerate reproducibly.
 
 1. **No mutable globals.** Package-level `var` only for sentinels, compile-time checks, immutable-by-construction values, and write-once hooks (set exactly once during init, panic on double-set). Sentinel errors created with `errors.New` are allowed; do not flag them unless code reassigns them or exposes a meaningful mutation path. Everything else flows through constructors. See [references/design.md](references/design.md) and [references/design-idioms.md](references/design-idioms.md).
 2. **Avoid `init()`.** Prefer explicit registry assembly. `init()` is acceptable only for deterministic metadata/factory registration with no I/O, goroutines, live dependencies, or config reads. **Never read environment variables or config during `init()`** — values may not be set yet, and ordering is unpredictable. Guard against this with an early-main assertion (see [references/config.md](references/config.md)). See [references/design.md](references/design.md) and [references/plugin-systems.md](references/plugin-systems.md).
-3. **Errors: propagate with context, handle once at the boundary.** Use `%w` only when exposing the cause is stable contract; otherwise `%v` or map to domain error. Never log and return. See [references/errors.md](references/errors.md).
+3. **Errors: propagate with context, handle once at the owning boundary.** A designated policy boundary may retry safely within explicit budgets or return partial/degraded results under a documented, observable contract with explicit completeness semantics. Retry exhaustion and any failure that prevents required correctness, integrity, or security guarantees must fail the operation. Never fabricate success, silently substitute behavior, or log and return the same terminal error. Use `%w` only when exposing the cause is stable contract; otherwise `%v` or map to domain error. See [references/errors.md](references/errors.md).
 4. **No naked goroutines.** A goroutine's maximum lifetime must be bounded by the scope that owns and waits for it. Start goroutines via `sync.WaitGroup.Go`, `errgroup`, `run.Group`, `safe.Collect`, or an explicit owner that can cancel and wait. Looping or blocking goroutines select on `ctx.Done()`. Raw `go` requires documented owner, stop path, wait path, and reason. For servers with goroutine-per-connection patterns bounded by MaxConn, a goroutine gate function (check state + WaitGroup.Add + go) is acceptable; see [references/concurrency.md](references/concurrency.md).
 5. **Bounded concurrency.** `errgroup.SetLimit(n)` or `semaphore.Weighted`. Never unbounded goroutines in a loop.
 6. **Graceful shutdown is mandatory and ordered.** For request-serving APIs: Drain → Hammer → Terminate. For daemons and agents: dependency-ordered teardown (stop producers before consumers, wait on goroutine accounting, timeout at critical boundaries). Both models require explicit timeouts. See [references/lifecycle.md](references/lifecycle.md) and [references/server/scaffold.md](references/server/scaffold.md).
 7. **Bound every resource explicitly.** HTTP servers/clients: explicit timeouts. DB pools: `MaxConns`, lifetime, idle time. Retries: max attempts + backoff. Queues: explicit capacity. Shutdown: deadline on drain.
-8. **Strong types for domain values.** `type AccountID string`, `type Cents int64`. Prevents wrong-ID-type bugs at compile time.
+8. **Strong types for domain values.** `type AccountID string`, `type Cents int64`. Prevents wrong-ID-type bugs at compile time. Use them in new designs; migrate established signatures and representations through explicit compatibility work.
 9. **System boundary contracts.** Cross-service data validated at boundaries: correct ID types, populated fields, documented invariants. Treat external data with suspicion.
 10. **No `log.Fatal`, `os.Exit` outside `main()`.** Library/service code returns errors.
 11. **Deployment-varying operational parameters from configuration.** Addresses, credentials, feature flags, pool sizes, and values that differ between environments are loaded from config. Protocol-level correctness values (timeouts derived from downstream SLOs, security boundaries) live in code with documented rationale.
 12. **Copy mutable data at ownership boundaries.** Store a caller-provided slice/map → copy it. Return internal state → return a snapshot. See [references/design-idioms.md](references/design-idioms.md).
 13. **Context is not a service locator.** First parameter, never stored in a struct. Used for cancellation, deadlines, request-scoped values. Dependencies go through constructors. Exception: storing a context that represents component/config lifecycle (not request lifetime) is acceptable when the context is created at provision and cancelled at unload.
-14. **No panic, no recover in application code.** Return errors. Panics crash the process; the orchestrator restarts it. `recover` appears only in package-internal entry points (structured longjmp for recursive code) and infrastructure boundaries (add observability then re-panic — the process still crashes). Goroutine managers (`errgroup`, `safe.Collect`, goroutine gates) do **not** recover panics. `panic()` is limited to programmer-error invariants in Must* constructors, exhaustive switches, and `_ struct{}` API evolution safety. See [references/errors.md](references/errors.md).
+14. **No panic, no recover in application code.** Return errors. Unexpected panics must not be converted into ordinary errors or responses so the process can continue on potentially corrupted state. `recover` appears only in package-internal entry points for structured control flow and explicitly designated infrastructure boundaries that preserve the termination policy while adding observability. Verify framework behavior: `net/http` recovers handler panics, so re-panicking there does not terminate the process. Do not assume a supervisor will restart an exited process; restart behavior is a deployment contract. Goroutine managers (`errgroup`, `safe.Collect`, goroutine gates) do **not** recover panics. `panic()` is limited to programmer-error invariants in Must* constructors, exhaustive switches, and `_ struct{}` API evolution safety. See [references/errors.md](references/errors.md).
 
 ## Output Contracts
 
@@ -90,7 +92,8 @@ State clearly:
 - Files created or modified
 - Which safety invariants are satisfied and how
 - Tests added (or why not)
-- Commands to validate (`golangci-lint run ./...`, `go test ./...`)
+- Repository-native commands used to validate; for greenfield projects default
+  to `golangci-lint run ./...` and `go test ./...`
 
 ### When scaffolding a new service
 
@@ -105,8 +108,12 @@ Include:
 
 Separate changes into:
 
-- **Safety fixes** — applied immediately regardless of style
+- **Safety fixes** — required for the changed behavior to operate safely
 - **Style migrations** — only if the task is a planned migration of the subsystem
+
+Apply safety fixes needed for the changed behavior to operate safely. Report
+unrelated pre-existing violations separately rather than expanding the task into
+an unsolicited migration, unless they present an immediate critical risk.
 
 ## Review Checklist
 
@@ -124,7 +131,11 @@ and libraries.
 - Hardcoded operational parameters
 - Public API with ambiguous same-type arguments or naked booleans
 - Cross-system data used without boundary validation
+- Established contract changes without the compatibility check in
+  [design-idioms.md §8](references/design-idioms.md#8-api-evolution-safety)
 - Missing tests for changed error handling, cancellation, concurrency, or ownership paths
+- Time-dependent tests that use arbitrary wall-clock sleeps instead of completion
+  signals, controlled time, or bounded condition polling with diagnostic timeouts
 
 **Service/system scope:**
 
@@ -146,7 +157,7 @@ and libraries.
 | Run N things concurrently (all must succeed, error returns) | `errgroup.WithContext` + `SetLimit` |
 | Run N things concurrently (best-effort collect) | `safe.Collect` — bounded, per-item errors, panics crash |
 | Pass a dependency | Constructor parameter |
-| Configure optional settings | Config struct with zero-value defaults + `Validate() error` |
+| Configure optional settings | Documented defaults for omitted values + presence-aware parsing + `Validate() error` |
 | Handle an error | Add operation context and return; `%w` only for stable contract |
 | Represent a domain identifier | `type FooID string` / `type FooID int64` — not raw primitive |
 | Log | `*slog.Logger` via constructor |
@@ -155,7 +166,7 @@ and libraries.
 | Return immutable data from getters | View types: read-only wrappers over slices/maps. Prevents caller mutation of internal state |
 | Serialize async state changes | `ExecQueue`: ordered serial execution with at most 1 goroutine. Prevents thundering herd |
 | Make outgoing HTTP requests | Custom `http.Client{Timeout: ...}`. Never `http.DefaultClient` |
-| Handle partial failure in fan-out | Collect results + errors separately. Return partial results with warnings — see [references/resilience.md](references/resilience.md) |
+| Handle partial failure in fan-out | Only under a documented partial-result contract: return results + per-item errors with explicit completeness semantics — see [references/resilience.md](references/resilience.md) |
 
 ### Service scope
 
@@ -212,17 +223,29 @@ readiness, or periodic health checks.
 
 ## Existing Codebases
 
-Apply safety invariants immediately. Preserve existing framework choices unless
-migrating the whole subsystem. Do not churn stable code for style compliance —
-fix safety issues; leave aesthetics for new code or planned rewrites.
+Enforce safety invariants in new and materially changed execution paths, including
+relevant callers, dependencies, and ownership paths. Fix directly exposed safety
+violations needed to complete the task safely. Report unrelated violations rather
+than widening scope unless they present an immediate critical risk. Preserve
+existing framework and tooling choices unless migrating the whole subsystem. Do
+not churn stable code for style compliance; migrate established APIs to strong
+domain types through planned compatibility work.
+
+Before changing an established contract (API, wire, persisted data, or
+deployment interface), apply the compatibility check in
+[design-idioms.md §8](references/design-idioms.md#8-api-evolution-safety).
+Breaking changes require an explicit migration and rollout plan.
 
 ## Tier 2: Project Defaults
 
-For new code only. These improve maintainability but should follow local style
-in existing codebases. Constructor injection, consumer-side interfaces (1-2
-methods), slog only (no global logger), useful zero values, generics for type
-safety not cleverness, config structs over functional options, Kong for CLIs,
-`golangci-lint` in CI. Details in the relevant reference files.
+For greenfield code or explicitly adopted migrations. Existing repositories use
+their established lint, formatting, test, assertion, and command conventions;
+adding a dependency or changing CI policy is a separate tooling decision. Local
+conventions do not waive safety requirements or verification coverage. Defaults:
+constructor injection, consumer-side interfaces (1-2 methods), slog only (no
+global logger), useful zero values, generics for type safety not cleverness,
+config structs over functional options, Kong for CLIs, `golangci-lint` in CI.
+Details in the relevant reference files.
 
 ## References
 
@@ -256,7 +279,7 @@ reviewing, or debugging code in that area. Skip unrelated ones.
 |---|---|---|
 | [references/server/scaffold.md](references/server/scaffold.md) | Kong CLI, loadConfig, complete main.go, run group, shutdown flow | Starting a new service or wiring the process entry point |
 | [references/server/handlers.md](references/server/handlers.md) | Service layer, generic handler adapter, decoders, error mapping, HTTP server assembly | Adding endpoints, changing request/response handling |
-| [references/server/middleware.md](references/server/middleware.md) | Request ID, logging, auth, no panic recovery | Adding or modifying HTTP middleware |
+| [references/server/middleware.md](references/server/middleware.md) | Request ID, logging, auth, no recover-and-continue panic handling | Adding or modifying HTTP middleware |
 | [references/server/connect-grpc.md](references/server/connect-grpc.md) | Connect handlers, interceptors, traditional gRPC fallback | Adding gRPC/Connect services |
 | [references/server/health.md](references/server/health.md) | Liveness vs readiness, ReadinessChecker interface | Adding or debugging health checks |
 

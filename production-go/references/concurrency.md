@@ -267,9 +267,10 @@ admission control (boolean gate).
 
 Normal errors (connection closed, client timeout) are logged and the server
 continues — one bad connection is expected. Panics are **not recovered**. A
-panic is a programmer error; state may be corrupted. The process crashes and
-the orchestrator restarts it. This follows Google's Go style guidance:
-recovering panics to avoid crashes is a historical mistake that masks corruption.
+panic is a programmer error; state may be corrupted. It propagates to the Go
+runtime and terminates the process. Whether the deployment restarts it is a
+separate contract; do not assume a supervisor exists. Recovering panics to avoid
+termination masks possible corruption.
 
 ```go
 type Server struct {

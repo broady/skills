@@ -17,10 +17,10 @@
 
 ## The One Rule: Handle Once
 
-An error is handled exactly once. Handling means making an operational decision:
+An error is terminally handled exactly once. Handling means making an operational decision:
 logging it, returning a user-facing response, incrementing an error metric, or
 triggering a retry. Interior code does not handle errors; it adds context and
-propagates them.
+propagates them to the owning boundary.
 
 Long-running loops may log and continue after a recoverable per-iteration
 failure. That is handling the error, so do not also return the same error to
@@ -49,6 +49,19 @@ The boundary (HTTP handler, gRPC interceptor, CLI main) is where errors get
 logged and mapped to user-facing responses. Everywhere else, add operation
 context and return; use `%w` only when exposing the cause is an intentional
 contract.
+
+### Failure policy
+
+Propagate unexpected errors by default. A designated policy boundary may retry
+a safe operation within explicit attempt, time, and load budgets. It may return
+partial or degraded results only when the API documents completeness semantics,
+callers can distinguish the degraded result, and failures are observable. Retry
+exhaustion propagates the final failure. Attempt metrics inside the policy do not
+authorize duplicate logging of the terminal error.
+
+If a failure prevents required correctness, integrity, or security guarantees,
+fail the affected operation. Never fabricate success, substitute stale or empty
+data silently, or turn an unexpected failure into an undocumented fallback.
 
 Never ignore errors silently. If you intentionally discard one, annotate it:
 
@@ -622,8 +635,9 @@ if ve.Field != "email" {
 }
 ```
 
-For table-driven tests, include the expected error in the test case. In new
-tests, use `github.com/alecthomas/assert/v2` for routine assertions:
+For table-driven tests, include the expected error in the test case. Follow the
+repository's existing assertion conventions. In greenfield projects,
+`github.com/alecthomas/assert/v2` is the default for routine assertions:
 
 ```go
 tests := []struct {
@@ -673,19 +687,17 @@ invariant has been violated and the program is in an inconsistent state.
 
 ### Approved recover sites
 
-`recover` is never used in application code. Panics crash the process; the
-orchestrator restarts it. This follows Google's Go style guidance: "The
-standard `net/http` server violates this advice and recovers panics from
-request handlers. Consensus among experienced Go engineers is that this was a
-historical mistake."
+`recover` is never used in application code to convert an unexpected panic into
+ordinary control flow. Unexpected panics must terminate the process rather than
+continue on potentially corrupted state. Restart behavior is a deployment
+contract; do not assume a supervisor exists.
 
 Goroutine managers (`errgroup`, `safe.Collect`, goroutine gates) do **not**
 recover panics. A panic indicates a programmer error where state may be
 corrupted. Recovering and continuing — even to "shut down gracefully" — risks
-operating on corrupted state. Let it crash.
+operating on corrupted state.
 
-There are exactly two approved `recover` patterns, neither of which prevents
-crashes:
+There are exactly two approved `recover` patterns:
 
 **1. Package-internal panic+recover for deeply recursive code:**
 
@@ -738,35 +750,70 @@ and renders them inline as `%!v(PANIC=...)` rather than crashing. This is
 because crashing `Printf` is unacceptable for an output function. Do not
 copy this pattern in application code.
 
-**2. Infrastructure boundary recovery that re-panics:**
+**2. Infrastructure boundary recovery that preserves termination:**
 
-Narrow system boundaries around third-party code that may panic on malformed
-input may recover only to attach structured observability and then **re-panic**.
-They must not translate the panic into an error, a 500 response, or ordinary
-application control flow. The process still crashes; the recover exists solely
-to ensure request-scoped identifiers and structured metadata are recorded
-before the crash.
+A narrow system boundary may recover only to record request-scoped identifiers
+and structured metadata, then terminate the process immediately. It must not
+translate the panic into an error, a 500 response, or ordinary control flow, and
+it must not drain or shut down gracefully: other goroutines may share the
+corrupted state, so every extra moment of serving is a risk.
 
-For `net/http` infrastructure layers that must add observability before crash:
-log panic metadata, then re-panic with the original value (or
-`http.ErrAbortHandler` to suppress the redundant `net/http` log). For
-gRPC/Connect, prefer letting the panic propagate without recovery.
+Where the boundary is a goroutine you own, re-panic: the panic reaches the Go
+runtime and terminates the process. Where a framework sits above the boundary,
+re-panic is not enough. `net/http` recovers handler panics, re-panics included:
+HTTP/1 closes the connection, HTTP/2 resets the stream and keeps serving the
+connection, and the server keeps running. For gRPC/Connect, check the configured
+interceptor chain.
+
+For framework boundaries, terminate through a fatal hook that `main` defines.
+`os.Exit` skips deferred calls and buffered exporters, so the hook writes its
+record synchronously before exiting:
+
+```go
+// main owns how the process dies.
+fatal := func(ctx context.Context, p any, stack []byte) {
+	logger.ErrorContext(ctx, "panic", "value", p, "stack", string(stack)) // synchronous handler
+	os.Exit(2)
+}
+
+func Terminate(fatal func(context.Context, any, []byte)) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			defer func() {
+				p := recover()
+				if p == nil {
+					return
+				}
+				if p == http.ErrAbortHandler {
+					panic(p) // deliberate abort (httputil.ReverseProxy uses it), not a bug
+				}
+				fatal(r.Context(), p, debug.Stack())
+			}()
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+```
+
+Whether the process restarts is a deployment contract; do not assume a
+supervisor exists.
 
 ### What is NOT approved
 
-- **Any recover that prevents a crash.** If the code panicked, the process
-  must crash. Recovering panics to return 500s, to log-and-continue, or to
-  "avoid downtime" masks corrupted state and causes worse incidents later.
+- **Any recover that permits normal operation to continue.** Recovering panics
+  to return 500s, to log-and-continue, or to "avoid downtime" masks corrupted
+  state and causes worse incidents later.
 - HTTP/gRPC panic recovery middleware that converts panics into normal 500
   responses. Do not add `recovery.UnaryServerInterceptor()` or equivalent.
-  net/http's built-in recovery closes the connection (it does not continue
-  serving on it) but keeps the server accepting new connections — potentially
-  with corrupted process-level state. Google's style guide calls this "a
-  historical mistake."
+  net/http's built-in recovery closes the HTTP/1 connection or resets the
+  HTTP/2 stream, and the server keeps serving (an HTTP/2 connection keeps its
+  other streams), potentially with corrupted process-level state. Google's
+  style guide calls this "a historical mistake."
 - Goroutine supervisors that convert panics to errors and continue. The owner
-  cannot know whether shared state is corrupted. Let the process crash.
+  cannot know whether shared state is corrupted. Preserve process termination.
 - Recovering in application code for any reason other than the two approved
-  patterns above (structured longjmp, observability-then-re-panic).
+  patterns above (structured longjmp, or observability followed by immediate
+  process termination).
 
 **Acceptable panic() sites beyond Must* constructors:**
 

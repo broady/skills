@@ -9,10 +9,12 @@
 
 ## Project Default: golangci-lint
 
-Use `golangci-lint` as the project default linting tool. Avoid adding standalone
-`go vet` invocations, separate `staticcheck` binaries, or ad-hoc shell scripts
-unless an existing codebase already has a consistent equivalent. One tool, one
-config, one CI step.
+For greenfield projects, use `golangci-lint` as the default linting tool. In an
+existing repository, run its documented lint and formatting commands and
+preserve its established equivalent tooling. Introducing `golangci-lint`, a new
+linter, or a changed CI policy is a separate tooling decision, not incidental
+cleanup. Tool choice does not waive correctness checks. Avoid composing multiple
+overlapping lint entry points: one toolchain, one config, one CI step.
 
 ```sh
 golangci-lint run ./...

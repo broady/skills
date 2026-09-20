@@ -11,7 +11,7 @@ See [design.md](design.md) for the core model (packages, DI, interfaces, API des
 4. [Code Organization Within a Function](#4-code-organization-within-a-function) — guard clauses, line of sight, variable placement
 5. [Generics Guidelines](#5-generics-guidelines) — when to use, when not to, good patterns
 6. [Write-Once Hooks](#6-write-once-hooks-for-feature-registration) — init-time feature registration with single-set enforcement
-7. [Incomparable Types](#7-preventing-equality-on-unsafe-types-incomparable) — zero-width embedding to prevent `==` on crypto/custom-equality types
+7. [Incomparable Types](#7-preventing-equality-on-unsafe-types) — zero-width embedding to prevent `==` on crypto/custom-equality types
 8. [API Evolution Safety](#8-api-evolution-safety) — _ struct{}, sealed interfaces, enforced construction
 9. [View Types](#9-view-types-for-immutable-data-at-boundaries) — read-only wrappers for internal state returned from getters
 10. [Copy Slices and Maps at Boundaries](#10-copy-slices-and-maps-at-boundaries) — inbound copies, outbound copies, when to skip
@@ -20,7 +20,9 @@ See [design.md](design.md) for the core model (packages, DI, interfaces, API des
 
 Prefer useful zero values for value types and optional configuration objects.
 Service types with required dependencies may require constructors; a meaningless
-zero-value service is worse than an explicit `NewService(...)`.
+zero-value service is worse than an explicit `NewService(...)`. A zero value is
+useful only when it preserves the type's documented safety guarantees; it must
+not silently remove resource bounds, validation, or security checks.
 
 Make value-type zero values useful:
 
@@ -472,6 +474,26 @@ with custom equality methods). Combine with `noCopy` when the type also
 should not be copied.
 
 ## 8. API Evolution Safety
+
+Compatibility extends beyond exported Go declarations. Before changing an
+established contract, check:
+
+- source/API consumers;
+- wire formats and observable behavior;
+- persisted formats and migration/rollback paths; and
+- deployment and operator interfaces, including flags, environment variables,
+  manifests, metrics, and mixed-version rollout.
+
+Prefer one canonical implementation. Keep thin compatibility adapters only for
+an identified support obligation, have them delegate to canonical behavior, and
+remove them when that obligation ends. A breaking change requires an explicit
+migration and rollout plan. Do not preserve a known vulnerability silently;
+make the safety-versus-compatibility decision and migration explicit.
+
+The techniques below are safest when chosen during initial API design. Adding an
+unexported field to a struct used in unkeyed literals, or sealing an interface
+that external packages already implement, is itself a breaking change and needs
+planned compatibility work.
 
 ### Prevent Unkeyed Struct Literals
 Add `_ struct{}` as the last field in public structs:

@@ -282,7 +282,7 @@ func Transfer(from, to AccountID, amount Cents) error
 | Situation | Pattern |
 |---|---|
 | Few params, all required | Plain constructor: `NewStore(db, logger)` |
-| Optional settings, good defaults | Config struct with zero-value defaults |
+| Optional settings, good defaults | Config struct; zero means "default" only where zero is not a valid setting |
 | Serializable/loaded settings | Config struct with explicit tags |
 | At most one of N strategies; require one | Interface field on config struct + `Validate() error` |
 | Cross-field validation rules | Config struct + `Validate() error` |
@@ -297,26 +297,29 @@ Closure-style `WithX` options hide configuration and are especially discouraged.
 
 ```go
 type ClientConfig struct {
-	Timeout    time.Duration
-	MaxRetries int
-	Transport  Transport
+	Timeout     time.Duration // 0 = default (30s)
+	MaxAttempts int           // 0 = default (3); includes the first attempt, so 0 is never a real setting
+	Transport   Transport
 }
 
 func NewClient(logger *slog.Logger, cfg ClientConfig) (*Client, error) {
+	if cfg.Timeout < 0 || cfg.MaxAttempts < 0 {
+		return nil, errors.New("timeout and max attempts must not be negative")
+	}
 	if cfg.Timeout == 0 {
 		cfg.Timeout = 30 * time.Second
 	}
-	if cfg.MaxRetries == 0 {
-		cfg.MaxRetries = 3
+	if cfg.MaxAttempts == 0 {
+		cfg.MaxAttempts = 3
 	}
 	if cfg.Transport == nil {
 		return nil, errors.New("transport is required")
 	}
 	return &Client{
-		logger:    logger.With("component", "client"),
-		timeout:   cfg.Timeout,
-		retryMax:  cfg.MaxRetries,
-		transport: cfg.Transport,
+		logger:      logger.With("component", "client"),
+		timeout:     cfg.Timeout,
+		maxAttempts: cfg.MaxAttempts,
+		transport:   cfg.Transport,
 	}, nil
 }
 ```
@@ -335,7 +338,7 @@ cross-field validation, or must be serialized/inspected in tests.
 type ServerConfig struct {
 	Addr       string        `json:"addr" yaml:"addr"`
 	Timeout    time.Duration `json:"timeout" yaml:"timeout"`
-	MaxRetries int           `json:"max_retries" yaml:"max_retries"`
+	MaxRetries int           `json:"max_retries" yaml:"max_retries"` // 0 is valid (no retries): no default
 }
 
 func NewServer(logger *slog.Logger, cfg ServerConfig) *Server {
@@ -350,8 +353,12 @@ func NewServer(logger *slog.Logger, cfg ServerConfig) *Server {
 }
 ```
 
-Zero-value fields get sensible defaults in the constructor. Callers set only
-what they care about. The struct literal is self-documenting.
+Zero-value fields get sensible defaults in the constructor, so callers set only
+what they care about. That works only when zero is not a meaningful value. If a
+caller can legitimately supply 0, false, or "", zero cannot also mean "omitted":
+pick semantics where zero is invalid (`MaxAttempts`, not `MaxRetries`), or keep
+presence information with a pointer or three-state field (see
+[config.md](config.md#three-state-configuration-values)).
 
 ### Interface fields for mutually exclusive choices
 
@@ -505,7 +512,7 @@ func Parse(f *os.File) (*Doc, error)
 ```
 
 Avoid nil parameters. If a parameter can be nil, callers must think about nil.
-Prefer config structs with zero-value defaults instead.
+Prefer config structs with documented defaults instead.
 
 ## 5. Library Authorship
 

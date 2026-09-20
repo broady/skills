@@ -218,7 +218,7 @@ review.md:
 | Category | Action | Example |
 |----------|--------|---------|
 | **Real bug** | Report. This is why the audit exists. | Response body not closed on error path. Error silently discarded so caller sees success. Nil pointer reachable via empty config. |
-| **Real bug, wrong context** | Report with correct context. | Goroutine leak at shutdown — matters in library/test usage, not in orchestrated production where process exits. State this explicitly. |
+| **Real bug, wrong context** | Report with correct context. | Goroutine leak at shutdown — matters in library/test usage, but may not matter when the verified deployment exits immediately after shutdown. State the actual lifecycle explicitly. |
 | **Hardening** | Report briefly, don't inflate. | HTTP client without Timeout but behind context deadline. Missing mutex on field accessed from one goroutine. |
 | **Rule violation, code works** | Omit or footnote. | Type-level API hazard where all callers are correct. Shutdown ordering that's safe by convention. |
 
@@ -229,9 +229,10 @@ review.md:
   footnote — not a finding. Mention it in the themes section as "fragile API"
   and move on.
 - **"Process exits anyway" findings**: goroutine leaks, ticker leaks, and
-  incomplete shutdown in code that runs as a managed service behind an
-  orchestrator. Report only if the code is also used as a library (tests,
-  embedded), and frame it as "library usage impact" not "production risk."
+  incomplete shutdown where the actual deployment guarantees immediate process
+  exit. Verify that lifecycle rather than assuming an orchestrator. If the code
+  is also used as a library (tests, embedded), frame the finding around that
+  usage rather than overstating production impact.
 - **"Theoretical slow peer" findings**: missing HTTP client timeout where the
   call is to an internal service, behind a load balancer, or protected by a
   context deadline. These are defense-in-depth suggestions, not findings.

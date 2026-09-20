@@ -538,6 +538,16 @@ srv := &http.Server{
 
 ## Cross-Pattern Rules
 
+### Make degraded behavior an explicit contract
+
+Retries, fallbacks, partial results, and degraded operation are policy decisions,
+not ways to hide failure. Bound their work and duration, emit observability for
+the underlying failure, and make result completeness visible to callers. Never
+replace required data with fabricated, stale, or empty values unless the API
+explicitly defines and identifies that behavior. Retry exhaustion returns the
+final failure. If required correctness, integrity, or security guarantees cannot
+be met, fail the affected operation.
+
 ### Generate one wrapper per downstream
 
 ```go
@@ -625,7 +635,7 @@ request cancellation, inbound overload.
 
 | Pattern | Default | Use when | Do not use when |
 |---|---|---|---|
-| Circuit breaker | Failsafe-go per dependency | Correlated downstream slowness/failure; have a fallback or degraded path | No fallback, low traffic (will flap), local cheap call |
+| Circuit breaker | Failsafe-go per dependency | Correlated downstream slowness/failure; fail fast or use an explicit degraded-result contract | Low traffic (will flap), local cheap call |
 | Retry with budget | Failsafe-go + budget, max 2 retries | Safe/idempotent, transient error, deadline has budget, budget has capacity | Non-idempotent writes without key, expired deadline, retrying at multiple layers |
 | Load shedding | Failsafe-go adaptive limiter | Overload reduces goodput; mixed-priority traffic | Substitute for tenant quota enforcement |
 | Hedged requests | Failsafe-go hedge + budget, p95 delay, max 1 | Idempotent replicated reads with tail latency; spare downstream capacity | Writes, overloaded downstream, no cancellation, same instance |

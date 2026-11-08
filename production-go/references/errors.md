@@ -318,11 +318,11 @@ Rules:
 - Suffix the type name with `Error`.
 - Implement `Unwrap() error` when wrapping an underlying cause.
 - Fields are exported for programmatic inspection.
-- Check with `errors.As`:
+- Check with `errors.AsType` (Go 1.26+): type-safe, with no target variable.
+  Keep `errors.As` for interface targets or code that must build on older Go.
 
 ```go
-var ve *ValidationError
-if errors.As(err, &ve) {
+if ve, ok := errors.AsType[*ValidationError](err); ok {
     logger.LogAttrs(ctx, slog.LevelWarn, "validation failed",
         slog.String("field", ve.Field),
         slog.String("message", ve.Message),
@@ -407,10 +407,11 @@ func (h *Handler) CreateOrder(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) handleError(w http.ResponseWriter, r *http.Request, err error) {
-    var ve *domain.ValidationError
-    switch {
-    case errors.As(err, &ve):
+    if ve, ok := errors.AsType[*domain.ValidationError](err); ok {
         respondError(w, http.StatusUnprocessableEntity, ve.Error())
+        return
+    }
+    switch {
     case errors.Is(err, domain.ErrNotFound):
         respondError(w, http.StatusNotFound, "not found")
     case errors.Is(err, domain.ErrConflict):
@@ -446,10 +447,10 @@ func ErrorUnaryInterceptor(logger *slog.Logger) grpc.UnaryServerInterceptor {
 }
 
 func domainToGRPC(ctx context.Context, logger *slog.Logger, method string, err error) error {
-    var ve *domain.ValidationError
-    switch {
-    case errors.As(err, &ve):
+    if ve, ok := errors.AsType[*domain.ValidationError](err); ok {
         return status.Errorf(codes.InvalidArgument, "%s: %s", ve.Field, ve.Message)
+    }
+    switch {
     case errors.Is(err, domain.ErrNotFound):
         return status.Error(codes.NotFound, "not found")
     case errors.Is(err, domain.ErrConflict):
@@ -482,8 +483,8 @@ func (e *PermanentError) Error() string { return e.Err.Error() }
 func (e *PermanentError) Unwrap() error { return e.Err }
 
 func IsPermanent(err error) bool {
-	var p *PermanentError
-	return errors.As(err, &p)
+	_, ok := errors.AsType[*PermanentError](err)
+	return ok
 }
 ```
 
@@ -626,8 +627,8 @@ if !errors.Is(err, domain.ErrNotFound) {
 }
 
 // GOOD -- type check with inspection
-var ve *domain.ValidationError
-if !errors.As(err, &ve) {
+ve, ok := errors.AsType[*domain.ValidationError](err)
+if !ok {
     t.Fatalf("expected ValidationError, got: %T: %v", err, err)
 }
 if ve.Field != "email" {
@@ -805,6 +806,11 @@ func Terminate(fatal func(requestID string, p any, stack []byte)) func(http.Hand
 
 Whether the process restarts is a deployment contract; do not assume a
 supervisor exists.
+
+In modules whose `go` directive is 1.27 or later, the `debug.Stack()` header
+includes the goroutine's pprof labels, so the crash record carries them. Keep
+secrets and PII out of labels (see
+[observability/runtime.md](observability/runtime.md#pprof-goroutine-labels)).
 
 ### What is NOT approved
 

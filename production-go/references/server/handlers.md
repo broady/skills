@@ -107,7 +107,8 @@ func handle[In, Out any](
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		if err := json.NewEncoder(w).Encode(out); err != nil {
+		// json is encoding/json/v2 (Go 1.27+); on 1.26 use json.NewEncoder(w).Encode(out).
+		if err := json.MarshalWrite(w, out); err != nil {
 			logger.LogAttrs(r.Context(), slog.LevelError, "encode response", slog.Any("err", err))
 		}
 	})
@@ -132,29 +133,18 @@ common ones; write per-endpoint decoders for custom wire shapes.
 
 ```go
 // decodeJSON reads a JSON body into In. The caller supplies the route-level
-// request body budget explicitly.
+// request body budget explicitly. json is encoding/json/v2 (Go 1.27+):
+// UnmarshalRead requires exactly one JSON value and rejects duplicate object
+// keys and invalid UTF-8, which v1 silently accepts.
 func decodeJSON[In any](maxBodyBytes int64) func(http.ResponseWriter, *http.Request) (In, error) {
 	return func(w http.ResponseWriter, r *http.Request) (In, error) {
 		var in In
 		r.Body = http.MaxBytesReader(w, r.Body, maxBodyBytes)
-		dec := json.NewDecoder(r.Body)
-		if err := dec.Decode(&in); err != nil {
-			var maxErr *http.MaxBytesError
-			if errors.As(err, &maxErr) {
+		if err := json.UnmarshalRead(r.Body, &in); err != nil {
+			if _, ok := errors.AsType[*http.MaxBytesError](err); ok {
 				return in, fmt.Errorf("%w: request body too large", ErrValidation)
 			}
 			return in, fmt.Errorf("%w: invalid request body", ErrValidation)
-		}
-		var extra any
-		if err := dec.Decode(&extra); err != io.EOF {
-			var maxErr *http.MaxBytesError
-			if errors.As(err, &maxErr) {
-				return in, fmt.Errorf("%w: request body too large", ErrValidation)
-			}
-			if err != nil {
-				return in, fmt.Errorf("%w: invalid request body", ErrValidation)
-			}
-			return in, fmt.Errorf("%w: multiple JSON values", ErrValidation)
 		}
 		return in, nil
 	}
@@ -168,6 +158,73 @@ func decodePathID(param string) func(http.ResponseWriter, *http.Request) (string
 			return "", fmt.Errorf("%w: missing %s", ErrValidation, param)
 		}
 		return id, nil
+	}
+}
+```
+
+### JSON: encoding/json/v2
+
+On Go 1.27+, use `encoding/json/v2` (imported as `json`) for new JSON code. Its
+defaults are stricter at the boundary: duplicate keys are an error rather than
+last-one-wins, which closes a validation-smuggling gap, and `UnmarshalRead`
+rejects trailing data without a second decode. Unknown members are still
+ignored; add `json.RejectUnknownMembers(true)` when the API contract forbids
+them.
+
+Two v2 defaults fail at run time, not compile time. A `time.Duration` field
+fails to marshal, and fails to unmarshal when the input includes it. Any
+`format` struct tag (`time.Time` layouts, `[]byte` encodings, durations) fails
+the whole struct, because format tags are not enabled in Go 1.27. In a request
+type, `decodeJSON` reports either failure as a 400, which hides a programmer
+error as a client error. Round-trip every request and response type in a test
+with all fields set.
+
+Moving an existing API to v2 changes its wire behavior in many small ways,
+including:
+
+- field names match case-sensitively;
+- nil slices and maps encode as `[]` and `{}` instead of `null`;
+- `omitempty` no longer omits `false` or `0` (use `omitzero` for that);
+- `time.Duration` has no default representation (see above); pass
+  `jsonv1.FormatDurationAsNano(true)` to keep v1's integer nanoseconds, where
+  `jsonv1` is `encoding/json`, home of the v1-compatibility options.
+
+Options like `json.MatchCaseInsensitiveNames(true)` or
+`json.FormatNilSliceAsNull(true)` each fix one difference, not the whole
+contract. To keep v1 semantics, pass `jsonv1.DefaultOptionsV1()` (on Go 1.27,
+`encoding/json`'s own `Marshal` and `Unmarshal` are v2 called with these
+options), or stay on v1. Output then matches `jsonv1.Marshal` byte for byte,
+but not `Encoder.Encode`, which appends a newline. Where exact bytes are
+contractual (signatures, byte-level golden tests), keep the v1 encoder or write
+the newline. Either way, treat the switch as a compatibility change and pin the
+contract with golden request and response tests first (see
+[design-idioms.md §8](../design-idioms.md#8-api-evolution-safety)).
+
+On Go 1.26, v2 exists only behind `GOEXPERIMENT=jsonv2` and its API changed
+before release, so use `encoding/json` v1 for the whole handler, not just the
+decoder. v1 accepts duplicate keys (the last one wins). Encode responses with
+`json.NewEncoder(w).Encode(v)` in `handle` and `writeJSONError`. To reject
+trailing data, decode a second time and require `io.EOF`:
+
+```go
+// Go 1.26: json is encoding/json (v1).
+func decodeJSON[In any](maxBodyBytes int64) func(http.ResponseWriter, *http.Request) (In, error) {
+	return func(w http.ResponseWriter, r *http.Request) (In, error) {
+		var in In
+		r.Body = http.MaxBytesReader(w, r.Body, maxBodyBytes)
+		dec := json.NewDecoder(r.Body)
+		err := dec.Decode(&in)
+		if err == nil {
+			// Exactly one value: a second Decode must hit EOF. A trailing
+			// value leaves err nil and falls through as invalid.
+			if err = dec.Decode(new(json.RawMessage)); errors.Is(err, io.EOF) {
+				return in, nil
+			}
+		}
+		if _, ok := errors.AsType[*http.MaxBytesError](err); ok {
+			return in, fmt.Errorf("%w: request body too large", ErrValidation)
+		}
+		return in, fmt.Errorf("%w: invalid request body", ErrValidation)
 	}
 }
 ```
@@ -197,7 +254,8 @@ func writeError(logger *slog.Logger, w http.ResponseWriter, r *http.Request, err
 func writeJSONError(w http.ResponseWriter, status int, msg string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	if err := json.NewEncoder(w).Encode(struct {
+	// json is encoding/json/v2 (Go 1.27+); on 1.26 use json.NewEncoder(w).Encode.
+	if err := json.MarshalWrite(w, struct {
 		Error string `json:"error"`
 	}{Error: msg}); err != nil {
 		// Nothing useful to do after headers are written.

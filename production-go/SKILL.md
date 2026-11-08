@@ -247,7 +247,8 @@ adding a dependency or changing CI policy is a separate tooling decision. Local
 conventions do not waive safety requirements or verification coverage. Defaults:
 constructor injection, consumer-side interfaces (1-2 methods), slog only (no
 global logger), useful zero values, generics for type safety not cleverness,
-config structs over functional options, Kong for CLIs, `golangci-lint` in CI.
+config structs over functional options, Kong for CLIs, `encoding/json/v2` for
+JSON on Go 1.27+, `golangci-lint` in CI.
 Details in the relevant reference files.
 
 ## References

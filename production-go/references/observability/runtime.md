@@ -98,9 +98,17 @@ Use labels for:
 - Per-subsystem goroutines in multi-subsystem servers
 - Goroutines that survive longer than a single request
 
-Labels appear in `go tool pprof` goroutine profiles and can be filtered with
-`-tagfocus`. They also integrate with continuous profiling tools (Pyroscope, Parca)
-for per-component flame graphs.
+Labels appear in `go tool pprof` goroutine and CPU profiles and can be filtered
+with `-tagfocus`. They also integrate with continuous profiling tools (Pyroscope,
+Parca) for per-component flame graphs.
+
+Keep secrets, PII, and user-supplied values out of labels, always: anyone or
+anything with profile access sees them. In modules whose `go` directive is 1.27
+or later, tracebacks and `runtime/debug.Stack()` also print them in the header
+line (`goroutine 7 [running] {queue: "billing"}:`), so crash output and panic
+records carry them too. `GODEBUG=tracebacklabels=0` removes labels from
+traceback headers only; profiles still contain them, so it is extra mitigation
+for crash logs, not a substitute for safe labels.
 
 ## runtime/metrics for GC and goroutines
 

@@ -247,8 +247,8 @@ comment. Do not disable the linter wholesale because of occasional noise.
 ### Optional dependency bans
 
 Use `depguard` for project-specific dependency boundaries, not as a universal
-ban list. For JSON, direct `encoding/json` is acceptable when handlers apply
-explicit request size limits and handle decode/encode errors. If the project has
+ban list. For JSON, direct `encoding/json/v2` (Go 1.27+) or `encoding/json` is acceptable
+when handlers apply explicit request size limits and handle decode/encode errors. If the project has
 a serialization wrapper that centralizes those limits, unknown-field policy,
 redaction, or alternate encoders, then ban direct `encoding/json` imports and
 force callers through the wrapper.

@@ -2,9 +2,9 @@
 
 A structured multi-pass review for auditing an existing Go codebase against the
 production-go standard. The goal is reachable production failure modes with
-accurate severity and confidence — not maximizing finding count.
+accurate priority and confidence — not maximizing finding count.
 
-Read [review.md](review.md) first. It calibrates severity, confidence,
+Read [review.md](review.md) first. It calibrates priority, confidence,
 false-positive checks, and wording. This document defines the workflow that
 applies that calibration.
 
@@ -92,8 +92,10 @@ Each finding should include:
   concurrency, silent failure, ownership bug, boundary contract, design hazard
 - **trigger**: what production condition reaches this code (request, shutdown,
   role transition, retry, malformed input, slow peer, config change)
-- **severity**: Critical / High / Medium / Low
-- **confidence**: Confirmed / Partial / Design hazard
+- **consequence**: concrete impact if triggered
+- **status**: established defect / unverified risk / design or policy observation
+- **priority**: P0–P3 when assessable; otherwise unassigned
+- **confidence**: high / medium / low, independent of status and priority
 - **summary**: one-sentence description of the suspected issue
 
 Subagents should follow the false-positive checks in review.md before
@@ -120,7 +122,8 @@ For each finding from Phase 2, spawn a subagent with:
 - The finding (location, category, trigger, initial classification)
 - The relevant domain reference
 - [review.md](review.md) for calibration and false-positive checks
-- Instruction to either **confirm** or **refute** the finding
+- Instruction to test the claim against available evidence, including
+  mitigations, and report inconclusive results as unverified
 
 Each verification subagent must:
 
@@ -151,12 +154,11 @@ Each verification subagent must:
    - Design hazards: reorder initialization or add a concurrent caller to break
      the convention.
 
-5. **Classify the finding**:
-   - **Confirmed**: code has a reachable failure mode today.
-   - **Partial**: pattern is unsafe but current wiring limits reach.
-   - **Design hazard**: safe only because of undocumented ordering or
-     convention.
-   - **Not real**: synchronization or contract eliminates the bug.
+5. **Classify the finding** per review.md: established defect, unverified
+   risk, design/policy observation, or refuted claim. Independently assess
+   confidence (high / medium / low) and priority (P0–P3 where assessable).
+   Name any material unknowns. A severe plausible risk can warrant urgent
+   investigation despite incomplete evidence; don't assume it is confirmed.
 
 6. **Record reproducer status**:
    - **Reproduced**: test demonstrates the failure.
@@ -165,17 +167,19 @@ Each verification subagent must:
      related path).
    - **Not reproduced**: couldn't trigger in test; explain why (timing
      dependent, requires production load, depends on external system).
-   - **Not attempted**: finding is style-only or low-confidence.
+   - **Not attempted**: explain why, including when a low-confidence risk requires
+     investigation that could not be performed.
 
 Not every finding needs a reproducer. Confirmed data races and goroutine leaks
-should get one. Design hazards and style issues typically don't.
+should get one when practical and authorized. Observations typically don't.
 
 Each verification subagent returns a structured result:
 
 - **findingId**: identifier matching the Phase 2 finding
-- **verdict**: confirmed / partial / design-hazard / not-real
+- **status**: established-defect / unverified-risk / observation / refuted
+- **priority**: P0 / P1 / P2 / P3 / unassigned
 - **confidence**: high / medium / low
-- **reasoning**: why the verdict was reached, with specific code references
+- **reasoning**: why the status was reached, with specific code references
 - **traceNotes**: call chain followed, mitigations checked, callers examined
 - **reproducerStatus**: reproduced / partially-reproduced / not-reproduced /
   not-attempted
@@ -186,8 +190,9 @@ and optional test files.
 
 **Subagent guidance**: run up to 8 verification subagents in parallel, one per
 finding (or batch small related findings into one subagent). Each subagent
-should be adversarial — its job is to try to kill the finding, not to confirm
-it. Findings that survive are real.
+should actively look for evidence both supporting and refuting the claim.
+An inconclusive investigation remains unverified; it is not automatically real
+or refuted.
 
 ---
 
@@ -219,6 +224,7 @@ review.md:
 |----------|--------|---------|
 | **Real bug** | Report. This is why the audit exists. | Response body not closed on error path. Error silently discarded so caller sees success. Nil pointer reachable via empty config. |
 | **Real bug, wrong context** | Report with correct context. | Goroutine leak at shutdown — matters in library/test usage, but may not matter when the verified deployment exits immediately after shutdown. State the actual lifecycle explicitly. |
+| **Unverified risk** | Report significant plausible impact with unknowns and next verification. | A write may be acknowledged before durability, but the storage contract is unavailable. |
 | **Hardening** | Report briefly, don't inflate. | HTTP client without Timeout but behind context deadline. Missing mutex on field accessed from one goroutine. |
 | **Rule violation, code works** | Omit or footnote. | Type-level API hazard where all callers are correct. Shutdown ordering that's safe by convention. |
 
@@ -243,12 +249,11 @@ review.md:
 
 ### What survives triage
 
-The output should be a short list (typically 5-15 findings for a repo of
-50-200 packages) where every item has:
-- A concrete production consequence (not "could theoretically...")
-- A trigger that happens in normal operation (not "if someone changes the config
-  to an unsupported value")
-- A clear fix
+Report established defects and significant unverified risks supported by a
+plausible trigger and consequence. Name material unknowns, especially for
+unverified risks, and suggest a fix or next verification step. Do not impose a
+finding-count target or discard a serious but uncommon failure merely because
+it is uncommon.
 
 Themes and patterns go in the summary narrative, not as individual findings.
 
@@ -259,20 +264,14 @@ Themes and patterns go in the summary narrative, not as individual findings.
 **Goal**: collect all triaged findings into a prioritized summary the team can
 act on. Write one markdown file per finding plus an index file.
 
-### Priority mapping
+### Prioritization
 
-Priority is the fix-order bucket derived from severity and current status:
-
-| Priority | Criteria |
-|----------|----------|
-| P0 | Critical severity + Confirmed confidence |
-| P1 | High + Confirmed, or Critical + Partial |
-| P2 | Medium + Confirmed, or High + Partial |
-| P3 | Low, or Design hazard, or Medium + Partial, or Stale |
-| P4 | Style-only (include only if specifically requested) |
-
-Dismissed findings stay in the index at P3 with `N/A` severity so false
-positives are visible and won't be re-reported.
+Use the P0–P3 definitions in [review.md](review.md#priority-and-confidence).
+Assess priority from impact, reachability, scope, and urgency; record confidence
+and status independently. An unverified severe risk may require urgent
+investigation. Refuted claims receive no priority. Include policy or design
+observations separately when useful or requested, without automatically treating
+a rule violation as an incident.
 
 ### Themes (more important than individual findings)
 
@@ -283,12 +282,11 @@ Examples:
   Matters for library/test usage, not production." (One theme, not 12 findings.)
 - "HTTP clients inconsistently configured — 4 production paths use
   DefaultClient. Fix with a standard constructor."
-- "Panic recovery missing in 3 goroutine pools. SequentialScheduler has it,
-  others don't."
+- "Three worker shutdown paths do not wait for in-flight writes; verify which
+  can discard acknowledged work."
 
-The finding count in the index should reflect post-triage totals, not the raw
-sweep count. If Phase 2 produced 35 raw findings and triage consolidated them
-to 9, the index has 9 rows (plus dismissed entries for transparency).
+The finding count reflects post-triage totals, not the raw sweep count. Keep
+refuted claims separate if the user requests an investigation history.
 
 ### Output: index file (`README.md`)
 
@@ -298,21 +296,18 @@ explaining the priority scale. Example:
 ```markdown
 # Review Findings Index
 
-Priority is the fix-order bucket derived from severity and current status:
-`P0` is Critical, `P1` is High, `P2` is Medium, and `P3` is Low, stale,
-partial, dismissed, or design-only/static work.
+Priority reflects impact, reachability, scope and urgency; confidence is independent.
 
-| Priority | Severity | Category | Finding | Review status | Reproducer test status |
-|---|---|---|---|---|---|
-| P0 | Critical | Concurrency | [gRPC Stream Send Data Race](grpc-stream-send-race.md) | Confirmed | Not added. Needs fake stream. |
-| P1 | High | Availability | [Elector Bootstrap Stuck](elector-bootstrap-stuck.md) | Confirmed | Added: `TestOnAcquire...` in [..._test.go](path). |
-| P3 | N/A | Dismissed | [s.lastWritePath Race](DISMISSED-last-write-path-race.md) | Dismissed false positive | N/A |
+| Priority | Status | Confidence | Finding | Reproducer |
+|---|---|---|---|---|
+| P1 | Established defect | High | [Elector Bootstrap Stuck](elector-bootstrap-stuck.md) | Added targeted test |
+| P1 | Unverified risk | Medium | [Potential write loss](potential-write-loss.md) | Not attempted; trace storage contract |
 ```
 
 ### Output: per-finding files
 
-**Filename convention**: `<kebab-case-slug>.md`. Prefix dismissed findings with
-`DISMISSED-` and partial findings with `PARTIAL-`.
+**Filename convention**: `<kebab-case-slug>.md`. Keep any requested refutation
+history distinct from actionable findings.
 
 Each finding file follows this template:
 
@@ -321,10 +316,11 @@ Each finding file follows this template:
 
 | Field       | Value |
 |-------------|-------|
-| Severity    | Critical / High / Medium / Low / N/A |
+| Priority    | P0 / P1 / P2 / P3 / unassigned |
+| Status      | Established defect / Unverified risk / Design or policy observation |
 | Type        | Correctness / Concurrency / Lifecycle / Data ownership / ... |
-| Confidence  | Confirmed / Partial / Design hazard / Not real |
-| Guide rule  | Rule N (<name>), reference file |
+| Confidence  | High / Medium / Low |
+| Guide rule  | Optional: rule and reference; not evidence of impact |
 
 ## Location
 
@@ -345,7 +341,8 @@ What happens when it fires.
 
 ## Suggested fix
 
-Reference specific patterns from the production-go references and packages/safe.
+Suggest a targeted remedy or next verification step; reference a skill pattern
+only when it fits the code and established constraints.
 ````
 
 **For dismissed findings**, replace Description/Trigger/Impact/Suggested fix
@@ -362,9 +359,8 @@ What was originally suspected.
 call ordering, grep results).
 ```
 
-**For partial findings**, add an "Investigation result" section explaining why
-reach is limited and what would need to change for the finding to become
-confirmed.
+**For unverified risks**, explain the evidence, material unknowns, and the next
+verification step. Do not assert the suspected consequence as established.
 
 ---
 
@@ -378,8 +374,8 @@ Phase 3 for verification.
 use the diff review mode (single-pass, per the SKILL.md Review Mode section).
 
 **Legacy codebases.** Per the main skill's Existing Codebases section: fix
-safety issues, leave aesthetic preferences alone. Style-only findings go to P4
-or are omitted entirely.
+safety issues in scope, leave aesthetic preferences alone. Style-only
+observations are separate or omitted unless requested.
 
 **Large repos.** Phase 1 partitioning is critical. A repo with 50 packages
 might produce 15-20 review units. Phase 2 subagents can run in parallel; Phase
@@ -389,5 +385,4 @@ one shutdown path).
 **Resumability.** If the audit is interrupted (timeout, context limit, user
 pause), it should be resumable. Each Phase 2 finding and Phase 3 verification
 result is a separate file, so partial progress is preserved automatically. On
-resume, read existing finding files and skip findings that already have a
-verdict.
+resume, read existing finding files and skip findings whose status has already been established.

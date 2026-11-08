@@ -81,12 +81,12 @@ Change the authoritative input or generator and regenerate reproducibly.
 
 ### When reviewing code
 
-Structure findings as:
-
-- **Must fix** — demonstrated production risk: a reachable bug, or a safety-invariant violation with a concrete failure path. A rule violation in working code is a design hazard; rank it with [references/review.md](references/review.md) calibration
-- **Should fix** — Tier 2 defaults violated in new code, unclear ownership
-- **Nice to have** — style, naming, documentation
-- **Verify** — tests/commands the author should run
+Present actionable findings first, ordered by priority (P0–P3), with a location,
+trigger, consequence, and confidence. Use the impact-based calibration in
+[references/review.md](references/review.md): a rule violation alone does not
+set priority. Separate significant unverified risks and optional policy/design
+observations from established defects. Note material validation gaps. Respect a
+user-requested format when compatible.
 
 ### When producing code
 
@@ -196,7 +196,7 @@ libraries.
 ## Review Mode
 
 When reviewing or auditing Go code (as opposed to writing it), read
-[references/review.md](references/review.md) first — it calibrates severity,
+[references/review.md](references/review.md) first — it calibrates priority,
 confidence, false-positive checks, and wording. Then read domain-specific
 references based on what the code under review does:
 
@@ -205,11 +205,10 @@ references based on what the code under review does:
 - Code sets up servers, shutdown, or middleware → read [references/server/scaffold.md](references/server/scaffold.md)
 - Code accesses a database or processes async work → read [references/database/transactions.md](references/database/transactions.md)
 
-Apply the same checklist as authoring, but classify each finding with both
-**severity** (Critical/High/Medium/Low) and **confidence** (Confirmed/Partial/
-Design hazard) per the review reference. Recommend specific patterns from the
-references and [packages/safe](packages/safe) as fixes — don't just describe
-the problem.
+Use the checklist to generate hypotheses, not automatic findings. Classify each
+finding by **priority** (P0–P3) and independently by **confidence** (high,
+medium, low), per the review reference. Describe the mechanism and suggest a
+specific fix when useful; a skill rule is not evidence of a defect.
 
 ### Diff Review vs Full-Repo Audit
 
@@ -258,7 +257,7 @@ reviewing, or debugging code in that area. Skip unrelated ones.
 
 | File | Covers | Load when... |
 |---|---|---|
-| [references/review.md](references/review.md) | Finding confidence, severity calibration, false-positive checks, review wording | **Always** read first when reviewing or auditing Go code, triaging suspected issues, or validating third-party findings |
+| [references/review.md](references/review.md) | Finding confidence, priority calibration, false-positive checks, review wording | **Always** read first when reviewing or auditing Go code, triaging suspected issues, or validating third-party findings |
 | [references/audit.md](references/audit.md) | Multi-pass audit workflow: survey → domain sweeps (parallel subagents) → per-finding verification (parallel subagents + reproducers) → prioritized synthesis | Full-repo audit of an existing codebase (not diff reviews) |
 | [references/backpressure.md](references/backpressure.md) | Tiered flow control, memory limiters, queue bounds, per-tenant rate limiting, slow consumer handling | Connecting pipeline stages with channels/queues, adding rate limiting, handling slow consumers |
 | [references/concurrency.md](references/concurrency.md) | Structured concurrency model, goroutine lifecycle, bounded concurrency, goroutine gate, sync vs channels, Locked[T] | Adding goroutines, protecting shared state with mutexes, choosing between channels and sync primitives |

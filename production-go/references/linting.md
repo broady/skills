@@ -5,6 +5,7 @@
 - [Project Default: golangci-lint](#project-default-golangci-lint)
 - [Recommended Linters](#recommended-linters)
 - [Linters to Disable](#linters-to-disable)
+- [Raising the Go Version](#raising-the-go-version)
 - [golangci-lint in CI](#golangci-lint-in-ci)
 
 ## Project Default: golangci-lint
@@ -265,6 +266,23 @@ issues:
 | `gocognit`, `cyclop` | Cognitive/cyclomatic complexity thresholds trigger on straightforward switch statements and table-driven tests. |
 | `lll` | Line length limits conflict with Go's preference for descriptive names, struct tags, and long function signatures. |
 | `godox` | Banning `TODO`/`FIXME` comments hides technical debt rather than surfacing it. |
+
+## Raising the Go Version
+
+When you raise the `go` directive in `go.mod`:
+
+- **Raise it before adopting new APIs.** Since Go 1.27, `go test` runs vet's
+  `stdversion` check by default, which fails on standard-library symbols newer
+  than the `go` version in force for the file.
+- **Run `go fix ./...` and review the diff.** Its modernizers rewrite code to
+  newer idioms; `waitgroupgo` converts `Add`/`Done` pairs to `WaitGroup.Go`.
+  Go 1.27 renamed it from `waitgroup` and removed `fmtappendf`.
+- **Expect new vet reports.** Go 1.27's printf check flags
+  `fmt.Errorf("...: %w", p)` where `p` is `*E` but `E` itself implements
+  `error`. Wrapping the pointer makes `errors.AsType[E]` and type assertions
+  miss; wrap the form that implements `error`.
+- **Expect a small gofmt diff.** Go 1.27 changed gofmt's column-alignment logic,
+  so the first format can produce whitespace-only changes.
 
 ## golangci-lint in CI
 

@@ -37,7 +37,7 @@ func withRequestID(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		id := r.Header.Get("X-Request-ID")
 		if !validRequestID(id) {
-			id = uuid.NewString()
+			id = uuid.New().String() // stdlib uuid (Go 1.27+); github.com/google/uuid on 1.26
 		}
 		ctx := context.WithValue(r.Context(), requestIDKey{}, id)
 		w.Header().Set("X-Request-ID", id)

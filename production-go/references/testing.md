@@ -473,7 +473,7 @@ ID generation, and external calls as `func` fields with production defaults:
 type Server struct {
     store  OrderStore
     clock  func() time.Time  // default: time.Now
-    idFunc func() string     // default: uuid.NewString
+    idFunc func() string     // default: returns uuid.New().String() (stdlib, Go 1.27+)
 }
 ```
 

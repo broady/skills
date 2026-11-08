@@ -468,11 +468,16 @@ func TestMain(m *testing.M) {
 }
 ```
 
-### Production leak detection (Go 1.26+, experimental)
+### Production leak detection (Go 1.27+)
 
-`/debug/pprof/goroutineleak` uses GC reachability to detect leaked goroutines
-in running services. `goleak` remains the primary tool for tests; the pprof
-profile is complementary for production observability.
+The `goroutineleak` profile (generally available in Go 1.27; behind a
+GOEXPERIMENT in 1.26) uses the garbage collector to find goroutines blocked on
+a channel, mutex, or condition variable that no runnable goroutine can reach.
+Read it with `pprof.Lookup("goroutineleak")` or from `/debug/pprof/goroutineleak`,
+and serve `net/http/pprof` only on an internal listener. It misses leaks where
+the blocking primitive is reachable from a global or from a runnable
+goroutine's locals, so an empty profile is not proof of no leaks. `goleak`
+remains the primary tool for tests.
 
 ---
 
@@ -519,6 +524,15 @@ signal to coordinate rather than relying on time advancement.
 
 Prefer `synctest` over mocking time interfaces — it works with the real
 `time` package and catches races that interface mocks hide.
+
+Go 1.27 adds two helpers:
+
+- `synctest.Sleep(d)` advances the bubble's clock by `d` and waits until every
+  other goroutine is durably blocked: `time.Sleep` plus `synctest.Wait`.
+- `httptest.NewTestServer(t, handler)` serves over an in-memory network that
+  works inside a bubble, so HTTP timeouts and shutdown deadlines run on fake
+  time. A 5s client timeout against a handler that never responds completes
+  instantly in real time.
 
 ---
 

@@ -368,6 +368,13 @@ Do not use generics for:
 
 Wait for 3+ concrete implementations before reaching for generics. Start concrete.
 
+**Generic methods (Go 1.27+).** A method may declare its own type parameters,
+like `func (r *Rand) N[Int intType](n Int) Int` in `math/rand/v2`. Use one when
+the operation belongs to a type, instead of a package-level generic function
+that takes the receiver as its first argument. Interface methods cannot declare
+type parameters, so a generic method never satisfies an interface; keep
+interface contracts non-generic. Requires `go 1.27` in `go.mod`.
+
 Good generic patterns:
 
 ```go

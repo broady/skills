@@ -21,7 +21,7 @@ Collect results from parallel work using a mutex-protected slice:
 
 ```go
 g, ctx := errgroup.WithContext(ctx)
-g.SetLimit(len(shards))
+g.SetLimit(maxShardQueries) // resource budget, independent of len(shards)
 var mu sync.Mutex
 var results []Result
 for _, shard := range shards {
@@ -89,7 +89,9 @@ func (c *RateLimitedClient) Do(ctx context.Context, req *http.Request) (*http.Re
 
 ### Timeout enforcement
 
-Derive a child context with a deadline. Never use `time.After` in a select — it leaks timers.
+Derive a child context with a deadline so the timeout propagates to callees.
+`time.After` in a select is fine for one-shot waits: since Go 1.23,
+unreferenced timers are garbage-collected.
 
 ```go
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)

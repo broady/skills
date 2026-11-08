@@ -233,9 +233,11 @@ review.md:
   exit. Verify that lifecycle rather than assuming an orchestrator. If the code
   is also used as a library (tests, embedded), frame the finding around that
   usage rather than overstating production impact.
-- **"Theoretical slow peer" findings**: missing HTTP client timeout where the
-  call is to an internal service, behind a load balancer, or protected by a
-  context deadline. These are defense-in-depth suggestions, not findings.
+- **"Theoretical slow peer" findings**: missing HTTP client timeout where a
+  verified bound covers the whole call, such as a caller context deadline that
+  also spans the body read. These are defense-in-depth suggestions, not
+  findings. "Internal service" or "behind a load balancer" alone is not a
+  bound: neither stops a peer that stalls mid-response.
 - **Pattern repetitions**: already handled by Step 1 clustering. One finding
   with a list of locations, not N findings.
 

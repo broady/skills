@@ -23,19 +23,22 @@ type Result[R any] struct {
 // Validate config-derived limits before calling Collect; this panic is for
 // programmer misuse, not ordinary production runtime failure.
 //
-// When ctx is cancelled, in-flight goroutines run to completion but new items
-// are not started; their Result.Err is set to ctx.Err().
+// Cancellation stops admission. Each item is admitted only if ctx is not done
+// once its concurrency slot is acquired; cancellation after that point reaches
+// fn through ctx, so fn should honor it. In particular, if fn cancels ctx
+// before returning, no later item is admitted. Items never admitted get
+// Result.Err = ctx.Err().
 //
 // Use Collect for best-effort fan-out/collect where individual failures are
 // tolerable (prefetch, cache warming, batch lookups with partial failure
 // tolerance). For all-or-nothing concurrency (first error aborts remaining
 // work), use errgroup.WithContext instead.
 func Collect[T, R any](ctx context.Context, limit int, items []T, fn func(context.Context, T) (R, error)) []Result[R] {
-	if len(items) == 0 {
-		return nil
-	}
 	if limit <= 0 {
 		panic("safe.Collect: limit must be > 0")
+	}
+	if len(items) == 0 {
+		return nil
 	}
 
 	results := make([]Result[R], len(items))
@@ -54,6 +57,14 @@ func Collect[T, R any](ctx context.Context, limit int, items []T, fn func(contex
 		case sem <- struct{}{}:
 		case <-ctx.Done():
 			results[i] = Result[R]{Err: ctx.Err()}
+			continue
+		}
+		// Both cases can be ready at once and select picks randomly. This check
+		// is the admission decision: anything cancelled before the slot freed
+		// is seen here, because freeing the slot happens-before this send.
+		if err := ctx.Err(); err != nil {
+			<-sem
+			results[i] = Result[R]{Err: err}
 			continue
 		}
 

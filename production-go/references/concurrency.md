@@ -50,7 +50,8 @@ and reason. Do not use raw `go` in examples unless ownership is the point of
 the example.
 
 **Callers own concurrency.** Library functions return results; they do not
-spawn internal goroutines. The caller decides whether work is concurrent and
+start goroutines that outlive the call. Call-scoped concurrency that is bounded
+and joined before returning (like `safe.Collect`) is fine. The caller decides whether work is concurrent and
 provides the lifecycle (context, errgroup). If a library must run background
 work, it exposes a `Run(ctx) error` method so the caller controls start/stop.
 
@@ -118,7 +119,8 @@ g.Add(
 
 g.Add(run.SignalHandler(context.Background(), syscall.SIGTERM, syscall.SIGINT))
 
-if err := g.Run(); err != nil {
+// run.ErrSignal is a normal stop, not a failure.
+if err := g.Run(); err != nil && !errors.Is(err, run.ErrSignal) {
     return fmt.Errorf("run server: %w", err)
 }
 return nil
@@ -166,6 +168,10 @@ for _, shard := range shards {
 }
 wg.Wait()
 ```
+
+One goroutine per shard is acceptable only because the shard set is fixed and
+small by construction. For input-sized slices, bound concurrency with
+`errgroup.SetLimit` or `safe.Collect`.
 
 `WaitGroup.Go` does not recover panics — a panic in any goroutine crashes
 the process (same as our policy). It also does not return errors; if you need
@@ -258,12 +264,14 @@ event delivery. Not suitable when cancellation or error propagation is needed
 
 When goroutines are long-lived and independently managed (goroutine-per-connection
 servers), errgroup's "first error cancels all" semantic is wrong — one connection
-failing should not tear down all others. Use a gate: a mutex-guarded boolean that
-refuses new goroutines during shutdown, paired with a WaitGroup for the join point.
+failing should not tear down all others. Use a gate: a mutex-guarded admission check
+that refuses new goroutines during shutdown or at capacity, paired with a
+WaitGroup for the join point.
 
 A raw `go` is justified here because the gate itself provides the lifecycle:
 owner (Server), stop path (context cancellation), wait path (WaitGroup), and
-admission control (boolean gate).
+admission control (shutdown flag plus an active-goroutine cap, so the gate also
+satisfies invariant 5).
 
 Normal errors (connection closed, client timeout) are logged and the server
 continues — one bad connection is expected. Panics are **not recovered**. A
@@ -274,9 +282,11 @@ termination masks possible corruption.
 
 ```go
 type Server struct {
-    mu      sync.Mutex
-    running bool
-    wg      sync.WaitGroup
+    mu        sync.Mutex
+    running   bool
+    active    int
+    maxActive int // admission bound; from config, validated > 0
+    wg        sync.WaitGroup
     ctx     context.Context
     cancel  context.CancelFunc
     logger  *slog.Logger
@@ -285,12 +295,18 @@ type Server struct {
 func (s *Server) startGoRoutine(name string, f func(context.Context) error) bool {
     s.mu.Lock()
     defer s.mu.Unlock()
-    if !s.running {
-        return false
+    if !s.running || s.active >= s.maxActive {
+        return false // shutting down or at capacity: caller rejects the work
     }
+    s.active++
     // wg.Go calls Add(1) synchronously, then launches the goroutine.
     // The Add happens under our mutex, preserving the gate invariant.
     s.wg.Go(func() {
+        defer func() {
+            s.mu.Lock()
+            s.active--
+            s.mu.Unlock()
+        }()
         if err := f(s.ctx); err != nil && !errors.Is(err, context.Canceled) {
             s.logger.LogAttrs(s.ctx, slog.LevelError, "goroutine failed",
                 slog.String("name", name),
@@ -301,14 +317,29 @@ func (s *Server) startGoRoutine(name string, f func(context.Context) error) bool
     return true
 }
 
-// Shutdown closes the gate, signals all goroutines, and waits for drain.
-func (s *Server) Shutdown() {
+// Shutdown closes the gate, signals all goroutines, and waits for them to
+// drain until ctx expires. It cannot stop a goroutine that ignores
+// cancellation; past the deadline the caller's force path is process exit.
+// Call it only where the process exits after it returns. For in-process
+// restart, every goroutine must honor s.ctx and Shutdown must wait for all of
+// them instead of abandoning the waiter.
+func (s *Server) Shutdown(ctx context.Context) error {
     s.mu.Lock()
     s.running = false
     s.mu.Unlock()
 
-    s.cancel()  // signal all goroutines to stop
-    s.wg.Wait() // wait for all to drain
+    s.cancel() // signal all goroutines to stop
+    done := make(chan struct{})
+    go func() { // outlives Shutdown only if a goroutine ignores ctx
+        s.wg.Wait()
+        close(done)
+    }()
+    select {
+    case <-done:
+        return nil
+    case <-ctx.Done():
+        return fmt.Errorf("goroutines still running at shutdown deadline: %w", ctx.Err())
+    }
 }
 ```
 

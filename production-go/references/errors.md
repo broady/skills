@@ -669,15 +669,20 @@ invariant has been violated and the program is in an inconsistent state.
 ### When panic is acceptable
 
 1. **True invariant violations** — continuing would cause data corruption or
-   undefined behavior. This is rare in application code.
+   undefined behavior: exhaustive switch defaults for enum types, data
+   structure invariants. This is rare in application code.
 2. **API misuse that is always a programmer bug** — e.g., a nil argument that
-   the contract forbids, called before `Init()`. The stdlib panics in these
-   cases (slice out-of-bounds, nil pointer dereference, closed channel send).
+   the contract forbids, a call before `Init()`, a nonpositive concurrency
+   limit, or a missing or duplicate ID during startup registration. `Must*`
+   constructors on static input belong here. The stdlib panics in these cases
+   (slice out-of-bounds, nil pointer dereference, closed channel send).
 3. **Dev/test-only invariant assertions** — checks that panic to catch
    programmer misuse are acceptable only when gated out of production by build
    tags, environment, or validated config. Production runtime failures still
    return errors.
 4. **Package-internal control flow** — see below.
+
+This is the complete list; other references point here.
 
 ### When panic is NOT acceptable
 
@@ -767,16 +772,19 @@ interceptor chain.
 
 For framework boundaries, terminate through a fatal hook that `main` defines.
 `os.Exit` skips deferred calls and buffered exporters, so the hook writes its
-record synchronously before exiting:
+record synchronously before exiting. Install the middleware outermost so it
+covers every other middleware. It then cannot see context values set further
+in, so it reads the request ID from the response header that `withRequestID`
+sets:
 
 ```go
 // main owns how the process dies.
-fatal := func(ctx context.Context, p any, stack []byte) {
-	logger.ErrorContext(ctx, "panic", "value", p, "stack", string(stack)) // synchronous handler
+fatal := func(requestID string, p any, stack []byte) {
+	logger.Error("panic", "request_id", requestID, "value", p, "stack", string(stack)) // synchronous handler
 	os.Exit(2)
 }
 
-func Terminate(fatal func(context.Context, any, []byte)) func(http.Handler) http.Handler {
+func Terminate(fatal func(requestID string, p any, stack []byte)) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			defer func() {
@@ -787,7 +795,7 @@ func Terminate(fatal func(context.Context, any, []byte)) func(http.Handler) http
 				if p == http.ErrAbortHandler {
 					panic(p) // deliberate abort (httputil.ReverseProxy uses it), not a bug
 				}
-				fatal(r.Context(), p, debug.Stack())
+				fatal(w.Header().Get("X-Request-ID"), p, debug.Stack())
 			}()
 			next.ServeHTTP(w, r)
 		})
@@ -814,10 +822,3 @@ supervisor exists.
 - Recovering in application code for any reason other than the two approved
   patterns above (structured longjmp, or observability followed by immediate
   process termination).
-
-**Acceptable panic() sites beyond Must* constructors:**
-
-- Exhaustive switch defaults for enum types (crash > silent wrong behavior)
-- Data structure invariant violations where continuing risks data corruption
-- `_ struct{}` as last field in public structs (prevents unkeyed literal
-  initialization)

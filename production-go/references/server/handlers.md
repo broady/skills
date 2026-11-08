@@ -209,7 +209,7 @@ func writeJSONError(w http.ResponseWriter, status int, msg string) {
 ## HTTP Server (stdlib net/http)
 
 ```go
-func buildHTTPServer(logger *slog.Logger, orderSvc *OrderService) *http.Server {
+func buildHTTPServer(logger *slog.Logger, orderSvc *OrderService, fatal func(requestID string, p any, stack []byte)) *http.Server {
 	mux := http.NewServeMux()
 
 	// Each line: decode → validate → call → JSON encode.
@@ -223,8 +223,10 @@ func buildHTTPServer(logger *slog.Logger, orderSvc *OrderService) *http.Server {
 	mux.HandleFunc("GET /readyz", handleReadyz(logger, 2*time.Second, orderSvc))
 
 	// Middleware stack: outermost wraps first, runs first.
-	// Do not add panic recovery middleware; handlers return errors.
-	handler := withRequestID(withLogging(logger, mux))
+	// Terminate is not recover-and-continue: net/http would otherwise recover a
+	// panic and keep serving, so Terminate records it and exits (see errors.md).
+	// It is outermost so panics in any middleware are covered too.
+	handler := Terminate(fatal)(withRequestID(withLogging(logger, mux)))
 
 	// Engineering decisions, not config — these are correct for our protocol
 	// and workload. Graduate to config only when they need to vary per

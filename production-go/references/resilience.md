@@ -507,7 +507,11 @@ func NewHTTPClient(maxConnsPerHost int) *http.Client {
         Timeout:   100 * time.Millisecond,
         KeepAlive: 30 * time.Second,
     }
-    return &http.Client{Transport: &http.Transport{
+    return &http.Client{
+        // Bounds the whole request, including the body read. Omit only for
+        // long-poll clients, where every request carries its own deadline.
+        Timeout: 10 * time.Second,
+        Transport: &http.Transport{
         Proxy:                  http.ProxyFromEnvironment,
         DialContext:            dialer.DialContext,
         TLSHandshakeTimeout:   200 * time.Millisecond,
@@ -517,7 +521,8 @@ func NewHTTPClient(maxConnsPerHost int) *http.Client {
         MaxIdleConns:           maxConnsPerHost * 2,
         MaxIdleConnsPerHost:    maxConnsPerHost, // stdlib default is 2 — too low
         IdleConnTimeout:        90 * time.Second,
-    }}
+        },
+    }
 }
 ```
 

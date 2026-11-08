@@ -539,9 +539,10 @@ func New(opts Options) *Client {
 
 ### Callers own concurrency
 
-Library functions return results synchronously. They do not spawn internal
-goroutines. If background work is unavoidable, expose a `Run(ctx) error`
-method so the caller controls the lifecycle:
+Library functions return results synchronously. They do not start goroutines
+that outlive the call. Call-scoped concurrency that is bounded and joined before
+returning (like `safe.Collect`) is fine. If background work is unavoidable,
+expose a `Run(ctx) error` method so the caller controls the lifecycle:
 
 ```go
 // GOOD: caller decides how to run it

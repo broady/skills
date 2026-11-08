@@ -43,9 +43,12 @@ runtime checks. Bounded everything. Correctness at boundaries.
 
 ## The Five Questions
 
-Before approving any code — agent-produced or human-written — answer these:
+Before approving any code — agent-produced or human-written — answer these. For
+scripts and prototypes, answer questions 2–4 only as far as invariants 1–5 reach
+(errors, goroutine ownership, concurrency bounds); libraries and services answer
+all five:
 
-1. **Who owns this data?** If a function stores a reference, it must own a copy. If it returns internal state, it returns a copy. If data crosses a system boundary, validate it.
+1. **Who owns this data?** If a function stores a reference or returns internal state, it copies unless a documented exception applies (invariant 12). If data crosses a system boundary, validate it.
 2. **Who handles this error?** The boundary handles it (logs, maps to status). Interior code wraps and returns. Never both. Never swallowed.
 3. **Who owns this goroutine?** Every goroutine must be traceable to a manager that can stop it and wait for it. If you can't point to the owner, it's a leak.
 4. **What bounds this resource?** Every retry loop, queue, request body, connection pool, HTTP client, worker count, and shutdown path needs an explicit budget.
@@ -59,20 +62,20 @@ change unsafe. Tool-generated files (protobuf stubs, sqlc output, `go generate`
 artifacts) are exempt from hand-written style rules: do not hand-edit them.
 Change the authoritative input or generator and regenerate reproducibly.
 
-1. **No mutable globals.** Package-level `var` only for sentinels, compile-time checks, immutable-by-construction values, and write-once hooks (set exactly once during init, panic on double-set). Sentinel errors created with `errors.New` are allowed; do not flag them unless code reassigns them or exposes a meaningful mutation path. Everything else flows through constructors. See [references/design.md](references/design.md) and [references/design-idioms.md](references/design-idioms.md).
-2. **Avoid `init()`.** Prefer explicit registry assembly. `init()` is acceptable only for deterministic metadata/factory registration with no I/O, goroutines, live dependencies, or config reads. **Never read environment variables or config during `init()`** — values may not be set yet, and ordering is unpredictable. Guard against this with an early-main assertion (see [references/config.md](references/config.md)). See [references/design.md](references/design.md) and [references/plugin-systems.md](references/plugin-systems.md).
+1. **No mutable globals.** Package-level `var` only for sentinels, compile-time checks, immutable-by-construction values, and write-once hooks (set exactly once during init, panic on double-set). Sentinel errors created with `errors.New` are allowed; do not flag them unless code reassigns them or exposes a meaningful mutation path. Everything else flows through constructors. Custom test flags in `*_test.go` are the one test-only exception (see [references/testing.md](references/testing.md)). See [references/design.md](references/design.md) and [references/design-idioms.md](references/design-idioms.md).
+2. **Avoid `init()`.** Prefer explicit registry assembly. `init()` is acceptable only for deterministic metadata/factory registration with no I/O, goroutines, live dependencies, or config reads. **Never read environment variables or config during `init()`** — values may not be set yet, and ordering is unpredictable. Guard against this with an early-main assertion (see [references/config.md](references/config.md)). Registering test-only flags in `init()` is also acceptable (see [references/testing.md](references/testing.md)). See [references/design.md](references/design.md) and [references/plugin-systems.md](references/plugin-systems.md).
 3. **Errors: propagate with context, handle once at the owning boundary.** A designated policy boundary may retry safely within explicit budgets or return partial/degraded results under a documented, observable contract with explicit completeness semantics. Retry exhaustion and any failure that prevents required correctness, integrity, or security guarantees must fail the operation. Never fabricate success, silently substitute behavior, or log and return the same terminal error. Use `%w` only when exposing the cause is stable contract; otherwise `%v` or map to domain error. See [references/errors.md](references/errors.md).
-4. **No naked goroutines.** A goroutine's maximum lifetime must be bounded by the scope that owns and waits for it. Start goroutines via `sync.WaitGroup.Go`, `errgroup`, `run.Group`, `safe.Collect`, or an explicit owner that can cancel and wait. Looping or blocking goroutines select on `ctx.Done()`. Raw `go` requires documented owner, stop path, wait path, and reason. For servers with goroutine-per-connection patterns bounded by MaxConn, a goroutine gate function (check state + WaitGroup.Add + go) is acceptable; see [references/concurrency.md](references/concurrency.md).
-5. **Bounded concurrency.** `errgroup.SetLimit(n)` or `semaphore.Weighted`. Never unbounded goroutines in a loop.
+4. **No naked goroutines.** A goroutine's maximum lifetime must be bounded by the scope that owns and waits for it. Start goroutines via `sync.WaitGroup.Go`, `errgroup`, `run.Group`, `safe.Collect`, or an explicit owner that can cancel and wait. Looping or blocking goroutines select on `ctx.Done()`. Raw `go` requires documented owner, stop path, wait path, and reason. For servers with goroutine-per-connection patterns bounded by MaxConn, a goroutine gate function (check state + WaitGroup.Add + go) is acceptable; see [references/concurrency.md](references/concurrency.md). Shutdown exception: a helper goroutine waiting on a call that can't be cancelled (`wg.Wait`, `db.Close`) may be abandoned at the shutdown deadline only on a path that exits the process right after. Never do this where the process keeps running or restarts components in-process (libraries, tests, in-process reload); make the call cancellable there instead.
+5. **Bounded concurrency.** `errgroup.SetLimit(n)` or `semaphore.Weighted`. Never unbounded goroutines in a loop. The limit is a resource budget, not `len(items)`. One goroutine per element is acceptable only when the cardinality is fixed and small by construction (e.g. a configured shard set).
 6. **Graceful shutdown is mandatory and ordered.** For request-serving APIs: Drain → Hammer → Terminate. For daemons and agents: dependency-ordered teardown (stop producers before consumers, wait on goroutine accounting, timeout at critical boundaries). Both models require explicit timeouts. See [references/lifecycle.md](references/lifecycle.md) and [references/server/scaffold.md](references/server/scaffold.md).
 7. **Bound every resource explicitly.** HTTP servers/clients: explicit timeouts. DB pools: `MaxConns`, lifetime, idle time. Retries: max attempts + backoff. Queues: explicit capacity. Shutdown: deadline on drain.
 8. **Strong types for domain values.** `type AccountID string`, `type Cents int64`. Prevents wrong-ID-type bugs at compile time. Use them in new designs; migrate established signatures and representations through explicit compatibility work.
 9. **System boundary contracts.** Cross-service data validated at boundaries: correct ID types, populated fields, documented invariants. Treat external data with suspicion.
-10. **No `log.Fatal`, `os.Exit` outside `main()`.** Library/service code returns errors.
-11. **Deployment-varying operational parameters from configuration.** Addresses, credentials, feature flags, pool sizes, and values that differ between environments are loaded from config. Protocol-level correctness values (timeouts derived from downstream SLOs, security boundaries) live in code with documented rationale.
-12. **Copy mutable data at ownership boundaries.** Store a caller-provided slice/map → copy it. Return internal state → return a snapshot. See [references/design-idioms.md](references/design-idioms.md).
+10. **No `log.Fatal`, `os.Exit` outside `main()`.** Library/service code returns errors. The exceptions are process-level force paths defined in package `main`: the panic fatal hook (see [references/errors.md](references/errors.md#approved-recover-sites)) and, where a deployment adopts one, a shutdown watchdog (see [references/lifecycle.md](references/lifecycle.md)).
+11. **Deployment-varying operational parameters from configuration.** Addresses, credentials, feature flags, and any value that differs between environments (pool sizes, once they vary by deployment; see [references/config.md](references/config.md)) are loaded from config. Protocol-level correctness values (timeouts derived from downstream SLOs, security boundaries) live in code with documented rationale.
+12. **No unauthorized mutation across ownership boundaries.** Copy by default: store a caller-provided slice/map → copy it; return internal state → return a snapshot. Exceptions (immutable after construction, documented shared ownership, a profiled hot path) need a comment. A read-only view stops caller writes but not races with concurrent internal mutation. See [references/design-idioms.md](references/design-idioms.md#10-copy-slices-and-maps-at-boundaries).
 13. **Context is not a service locator.** First parameter, never stored in a struct. Used for cancellation, deadlines, request-scoped values. Dependencies go through constructors. Exception: storing a context that represents component/config lifecycle (not request lifetime) is acceptable when the context is created at provision and cancelled at unload.
-14. **No panic, no recover in application code.** Return errors. Unexpected panics must not be converted into ordinary errors or responses so the process can continue on potentially corrupted state. `recover` appears only in package-internal entry points for structured control flow and explicitly designated infrastructure boundaries that preserve the termination policy while adding observability. Verify framework behavior: `net/http` recovers handler panics, so re-panicking there does not terminate the process. Do not assume a supervisor will restart an exited process; restart behavior is a deployment contract. Goroutine managers (`errgroup`, `safe.Collect`, goroutine gates) do **not** recover panics. `panic()` is limited to programmer-error invariants in Must* constructors, exhaustive switches, and `_ struct{}` API evolution safety. See [references/errors.md](references/errors.md).
+14. **No panic, no recover in application code.** Return errors. Unexpected panics must not be converted into ordinary errors or responses so the process can continue on potentially corrupted state. `recover` appears only in package-internal entry points for structured control flow and explicitly designated infrastructure boundaries that preserve the termination policy while adding observability. Verify framework behavior: `net/http` recovers handler panics, so re-panicking there does not terminate the process. Do not assume a supervisor will restart an exited process; restart behavior is a deployment contract. Goroutine managers (`errgroup`, `safe.Collect`, goroutine gates) do **not** recover panics. `panic()` is limited to the programmer-error cases in [references/errors.md](references/errors.md#when-panic-is-acceptable). See [references/errors.md](references/errors.md).
 
 ## Output Contracts
 
@@ -80,7 +83,7 @@ Change the authoritative input or generator and regenerate reproducibly.
 
 Structure findings as:
 
-- **Must fix** — safety invariant violations, production incident risks
+- **Must fix** — demonstrated production risk: a reachable bug, or a safety-invariant violation with a concrete failure path. A rule violation in working code is a design hazard; rank it with [references/review.md](references/review.md) calibration
 - **Should fix** — Tier 2 defaults violated in new code, unclear ownership
 - **Nice to have** — style, naming, documentation
 - **Verify** — tests/commands the author should run
@@ -117,9 +120,10 @@ an unsolicited migration, unless they present an immediate critical risk.
 
 ## Review Checklist
 
-Before finalizing, verify no violations. The first group applies always (safety
-invariants). The second group applies to services and systems — skip for scripts
-and libraries.
+Before finalizing, verify no violations. The first group applies to libraries and
+services; for scripts and prototypes, check only its first four items (invariants
+1-5). The second group applies to services and systems — skip for scripts and
+libraries.
 
 **Always check:**
 
@@ -140,7 +144,7 @@ and libraries.
 **Service/system scope:**
 
 - Server shutdown that doesn't drain every listener, worker, and dependency
-- Shutdown not ordered: components stopped in wrong order (producers before consumers, or missing drain phase)
+- Shutdown not ordered: components stopped in wrong order (consumers stopped while producers still send, or missing drain phase)
 - Error taxonomy missing: errors not classified as permanent/retryable at creation
 - Config reload unsafe: no rollback on failure, no serialization of concurrent reloads
 - Backpressure missing: unbounded queue or channel between pipeline stages
@@ -163,9 +167,9 @@ and libraries.
 | Log | `*slog.Logger` via constructor |
 | Protect shared state | `sync.Mutex` (read-heavy: `sync.RWMutex`); compound mutations: `safe.Locked[T]` |
 | Track goroutine lifecycle at runtime | Goroutine accounting: `Go()` increments counter, defer decrements. Assert zero at shutdown in tests |
-| Return immutable data from getters | View types: read-only wrappers over slices/maps. Prevents caller mutation of internal state |
+| Return immutable data from getters | View types: read-only wrappers over slices/maps. Stops caller writes; does not synchronize concurrent internal mutation, so the data must be immutable or guarded |
 | Serialize async state changes | `ExecQueue`: ordered serial execution with at most 1 goroutine. Prevents thundering herd |
-| Make outgoing HTTP requests | Custom `http.Client{Timeout: ...}`. Never `http.DefaultClient` |
+| Make outgoing HTTP requests | Custom `http.Client` with explicit Transport timeouts and `Timeout`. Never `http.DefaultClient`. Long-poll clients: see the per-request row below |
 | Handle partial failure in fan-out | Only under a documented partial-result contract: return results + per-item errors with explicit completeness semantics — see [references/resilience.md](references/resilience.md) |
 
 ### Service scope
@@ -179,7 +183,7 @@ and libraries.
 | Protect outbound calls (retry, breaker, timeout) | `failsafe-go` composition per dependency — see [resilience.md](references/resilience.md) |
 | Classify errors for retry decisions | Tag at creation: permanent (never retry), retryable (with backoff). Use `SafeToRetry` for DB/network — see [references/errors.md](references/errors.md) |
 | Detect stuck long-lived connections | Watchdog timer: reset on every received frame (including keepalives). Terminate on expiry — see [references/resilience.md](references/resilience.md) |
-| Apply per-context timeouts (mixed long-poll + RPC) | `context.WithTimeout` per-request, not `http.Client.Timeout`. Client-level timeout kills long polls — see [references/resilience.md](references/resilience.md) |
+| Apply per-context timeouts (mixed long-poll + RPC) | Overrides the `Client.Timeout` rule: `context.WithTimeout` per request, and the deadline must cover reading the body. Every request needs one. Client-level timeout kills long polls — see [references/resilience.md](references/resilience.md) |
 | Manage process lifecycle (multi-subsystem) | `run.Group` for independent subsystems, topological ordering for pipelines — see [references/lifecycle.md](references/lifecycle.md) |
 | Reload config without downtime | Start-then-stop or atomic handler swap. Serialize reloads. Support rollback — see [references/lifecycle.md](references/lifecycle.md) |
 | Write data durably | temp file → write → fsync → rename → fsync dir — see [references/data-integrity.md](references/data-integrity.md) |

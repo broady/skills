@@ -4,13 +4,16 @@
     {
       "id": 1,
       "prompt": "Review this Go code for production readiness:\n\n```go\npackage worker\n\nimport (\n\t\"fmt\"\n\t\"log\"\n\t\"net/http\"\n)\n\nvar client = http.DefaultClient\n\nfunc ProcessItems(items []string) {\n\tfor _, item := range items {\n\t\tgo func() {\n\t\t\tresp, err := client.Get(fmt.Sprintf(\"https://api.example.com/process/%s\", item))\n\t\t\tif err != nil {\n\t\t\t\tlog.Printf(\"failed to process %s: %v\", item, err)\n\t\t\t\treturn\n\t\t\t}\n\t\t\tdefer resp.Body.Close()\n\t\t\tlog.Printf(\"processed %s: status %d\", item, resp.StatusCode)\n\t\t}()\n\t}\n}\n```",
-      "expected_output": "Should identify: naked goroutines (no owner, no wait), unbounded concurrency (goroutine per item), http.DefaultClient usage, closure variable capture bug (item not passed), mutable global (client), log.Printf instead of injected slog, no context propagation, no error return from ProcessItems. Must-fix category.",
+      "expected_output": "Should identify: naked goroutines (no owner, no wait), unbounded concurrency (goroutine per item), http.DefaultClient usage, mutable global (client), log.Printf instead of injected slog, no context propagation, no error return from ProcessItems. Must-fix category. Should not present loop-variable capture as a current bug: the prompt gives no go.mod, and modules declaring go 1.22+ give each iteration its own variable. Mentioning it as conditional on the module's language version is fine.",
       "assertions": [
         {"type": "contains", "value": "goroutine", "description": "Identifies naked goroutine problem"},
         {"type": "contains", "value": "unbounded", "description": "Flags unbounded concurrency"},
         {"type": "contains", "value": "DefaultClient", "description": "Catches http.DefaultClient usage"},
-        {"type": "contains", "value": "closure", "description": "Identifies loop variable capture bug"},
+        {"type": "contains", "value": "context", "description": "Flags missing context propagation"},
         {"type": "contains", "value": "Must fix", "description": "Uses output contract format"}
+      ],
+      "expectations": [
+        "The response does not present capture of `item` by the goroutine closure as a current bug or list it under Must fix. Mentioning it only as a concern for modules whose go.mod declares go < 1.22 is acceptable."
       ]
     },
     {

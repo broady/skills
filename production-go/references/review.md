@@ -73,11 +73,15 @@ Before assigning severity, answer these questions honestly:
    finding applies to. A "goroutine leak at shutdown" that only matters for test
    hygiene is Low, not High.
 
-3. **Is the infrastructure already handling this?** HTTP clients without explicit
-   timeouts are still bounded by TCP keepalive, load balancer timeouts, DNS TTL,
-   and context deadlines from callers. Check whether a higher-level timeout
-   exists before reporting an unbounded call. If the real-world bound is "30s
-   from the load balancer," say so and rate accordingly.
+3. **Is the infrastructure already handling this?** Check for a higher-level
+   bound before reporting an unbounded call, but credit one only after
+   verifying which phase it covers and that it applies on this path. A caller's
+   context deadline bounds the whole request, including the body read, if the
+   body is read under that context. TCP keepalive detects dead peers, not a live
+   peer that stalls. A load balancer idle timeout may not cut a response that
+   trickles. DNS TTL bounds nothing in flight. If the verified bound is "30s
+   caller deadline," say so and rate accordingly; if nothing covers a stalled
+   body read, it is a real hang.
 
 4. **What actually happens when this fires?** "Goroutine leak" sounds scary but
    if the goroutine is lightweight, bounded to one per component, and exits
@@ -126,11 +130,11 @@ library where the process does not exit after Stop(). A goroutine that outlives
 Stop() by a few seconds in a process that's about to exit is Low — name the
 specific resource it holds or downgrade.
 
-Do not report a missing HTTP client timeout as High unless you've checked that
-no higher-level timeout exists (context deadline, load balancer, infrastructure
-keepalive). If the call is already bounded by a context with a deadline, the
-missing client-level timeout is defense-in-depth (Medium at most), not an
-unbounded call.
+Do not report a missing HTTP client timeout as High until you've applied the
+phase-by-phase check in "so what?" item 3. A load balancer or keepalive counts
+only if you verified it covers a stalled response on this path. If the call is
+already bounded end to end by a context deadline, the missing client-level
+timeout is defense-in-depth (Medium at most), not an unbounded call.
 
 Do not report a type-level API hazard (e.g., unsynchronized field that all
 current callers access from one goroutine) at the same severity as a live bug.

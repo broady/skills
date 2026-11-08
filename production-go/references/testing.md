@@ -258,10 +258,10 @@ from built-in test flags. Discover all registered flags with:
 go test -v -args -h   # lists custom flags alongside built-ins
 ```
 
-Prefer `init()` over parsing in `TestMain` for flag registration only —
-packages that already use `TestMain` for goleak or container setup don't need
-to coordinate `flag.Parse()` calls (`go test` parses flags before `TestMain`
-runs). Do not use this exception for production initialization, hidden
+Registering flags in `init()` is a deliberate test-only exception: it works
+whether or not the package has a `TestMain`, because flags are always parsed by
+the time tests run. `TestMain` runs before parsing, so if `TestMain` itself
+reads a flag it must call `flag.Parse()` first. Do not use this exception for production initialization, hidden
 dependencies, or test state that can be local to a test.
 
 ### testcontainers-go

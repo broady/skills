@@ -47,18 +47,35 @@ g.Add(
     },
 )
 
-// Actor 3: background worker.
+// Actor 3: background worker. worker.Run must return once workerCtx is
+// cancelled: run.Group cannot force a stuck actor to return.
 workerCtx, cancelWorker := context.WithCancel(context.Background())
 g.Add(
     func() error { return worker.Run(workerCtx) },
     func(error) { cancelWorker() },
 )
 
-if err := g.Run(); err != nil {
+// run.ErrSignal is a normal stop (exit 0); anything else is a failure.
+if err := g.Run(); err != nil && !errors.Is(err, run.ErrSignal) {
     logger.Error("process exited with error", "err", err)
     os.Exit(1)
 }
 ```
+
+`g.Run` returns only after every execute func returns, and run.Group has no way
+to force one that ignores its interrupt. Shutdown is bounded only if each actor
+is: cancellable operations, deadlines on drains, and bounded waits on calls that
+can't be cancelled. Anything left over is ended by the deployment's termination
+deadline (e.g. Kubernetes sends SIGKILL after `terminationGracePeriodSeconds`).
+Verify that deadline exists rather than assuming it.
+
+If the process must terminate itself because nothing external will, a shutdown
+watchdog is an explicit process-level policy, not part of this basic pattern.
+Test it separately. It must arm when shutdown starts, before any interrupt that
+can block (run.Group calls interrupts in registration order), and be stopped
+only after cleanup finishes. Know its limits: a log write that blocks delays
+the `os.Exit`, and `Timer.Stop` does not wait for a callback that already
+started.
 
 ### run.Group vs errgroup
 
@@ -148,7 +165,7 @@ func (s *Service) Shutdown(ctx context.Context) error {
         return fmt.Errorf("ring unregister: %w", err)
     }
 
-    select { // drain period; OK: called once at shutdown, no leak risk.
+    select { // drain period
     case <-time.After(s.drainTimeout):
     case <-ctx.Done():
         return ctx.Err()
@@ -186,13 +203,32 @@ component gets a chance to clean up.
 func (a *App) Shutdown() error {
     ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
     defer cancel()
-    return errors.Join(
+    err := errors.Join(
         a.server.Shutdown(ctx),
         a.worker.Shutdown(ctx),
-        a.db.Close(),
     )
+
+    // db.Close takes no context and waits for in-flight queries. If either
+    // shutdown above timed out, handlers may still be running queries
+    // (http.Server.Close does not wait for handlers), so bound Close with the
+    // same deadline. The caller exits the process next; that is the hammer
+    // for anything still running, including this goroutine. Don't reuse this
+    // where the process keeps running: the abandoned goroutine would leak.
+    closed := make(chan error, 1)
+    go func() { closed <- a.db.Close() }()
+    select {
+    case cerr := <-closed:
+        return errors.Join(err, cerr)
+    case <-ctx.Done():
+        return errors.Join(err, fmt.Errorf("db close: %w", ctx.Err()))
+    }
 }
 ```
+
+The deadline bounds only operations that honor `ctx`. Wrap any that don't, like
+`db.Close()`, so the wait is bounded, and name the process-level force path.
+Queries that use the request context are also cancelled when `Server.Close`
+closes their connections, which shortens the wait but does not bound it.
 
 ### Named lifecycle signals
 

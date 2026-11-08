@@ -144,6 +144,28 @@ func TestCollectRespectsContextCancellation(t *testing.T) {
 	}
 }
 
+// If fn cancels ctx before returning, no later item may be admitted, even when
+// the freed slot and ctx.Done() are both ready at the next select.
+func TestCollectAdmitsNothingAfterCancelInFn(t *testing.T) {
+	if testing.Short() {
+		t.Skip("stress test")
+	}
+	// The race window is narrow: the pre-fix code failed this within 300k
+	// iterations at GOMAXPROCS=8, never at 2k.
+	for range 300_000 {
+		ctx, cancel := context.WithCancel(context.Background())
+		var started atomic.Int32
+		Collect(ctx, 1, make([]int, 8), func(context.Context, int) (int, error) {
+			started.Add(1)
+			cancel()
+			return 0, nil
+		})
+		if n := started.Load(); n != 1 {
+			t.Fatalf("started %d items after cancel, want 1", n)
+		}
+	}
+}
+
 func TestCollectNilSlice(t *testing.T) {
 	results := Collect[int, int](context.Background(), 5, nil, func(_ context.Context, n int) (int, error) {
 		return n, nil
@@ -160,6 +182,18 @@ func TestCollectEmptySlice(t *testing.T) {
 	if results != nil {
 		t.Fatalf("got %v, want nil", results)
 	}
+}
+
+func TestCollectPanicsForNonPositiveLimitOnEmptyInput(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Fatal("expected panic for non-positive limit even with no items")
+		}
+	}()
+
+	Collect(context.Background(), 0, []int{}, func(_ context.Context, n int) (int, error) {
+		return n, nil
+	})
 }
 
 func TestCollectPanicsForNonPositiveLimit(t *testing.T) {
